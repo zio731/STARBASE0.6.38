@@ -1,14 +1,14 @@
 // ==UserScript==
 // @name         SLY Assistant
 // @namespace    http://tampermonkey.net/
-// @version      0.6.38
+// @version      0.6.59
 // @description  try to take over the world!
 // @author       SLY w/ Contributions by niofox, SkyLove512, anthonyra, [AEP] Valkynen, Risingson, Swift42
 // @match        https://*.based.staratlas.com/
-// @require      https://unpkg.com/@solana/web3.js@1.95.8/lib/index.iife.min.js
-// @require      https://raw.githubusercontent.com/ImGroovin/SAGE-Lab-Assistant/main/anchor-browserified.js
-// @require      https://raw.githubusercontent.com/ImGroovin/SAGE-Lab-Assistant/main/buffer-browserified.js
-// @require      https://raw.githubusercontent.com/ImGroovin/SAGE-Lab-Assistant/main/bs58-browserified.js
+// @require      https://unpkg.com/@solana/web3.js@1.95.8/lib/index.iife.min.js#sha256=a759deca1b65df140e8dda5ad8645c19579536bf822e5c0c7e4adb7793a5bd08
+// @require      https://raw.githubusercontent.com/ImGroovin/SAGE-Lab-Assistant/main/anchor-browserified.js#sha256=f29ef75915bcf59221279f809eefc55074dbebf94cf16c968e783558e7ae3f0a
+// @require      https://raw.githubusercontent.com/ImGroovin/SAGE-Lab-Assistant/main/buffer-browserified.js#sha256=4fa88e735f9f1fdbff85f4f92520e8874f2fec4e882b15633fad28a200693392
+// @require      https://raw.githubusercontent.com/ImGroovin/SAGE-Lab-Assistant/main/bs58-browserified.js#sha256=87095371ec192e5a0e50c6576f327eb02532a7c29f1ed86700a2f8fb5018d947
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=staratlas.com
 // @grant        GM_setValue
 // @grant        GM_getValue
@@ -63,12 +63,38 @@
 
 	let enableAssistant = false;
 	let initComplete = false;
+	let solanaErrorCount = 0;
 
 	let globalSettings;
 	const settingsGmKey = 'globalSettings';
 	const scanningPatterns = ['square', 'ring', 'spiral', 'up', 'down', 'left', 'right', 'sly'];
 	await loadGlobalSettings();
 
+	let errorLog = [];
+	let errorLogIndex = 0;
+	let errorLogMaxEntries = 30;
+	async function loadErrorLog() {
+		let savedErrorLog = await GM.getValue('ErrorLog', '{ "index": 0, "messages": [] }');
+		console.log(savedErrorLog);
+		let parsedErrorLog = JSON.parse(savedErrorLog);
+		errorLogIndex = parsedErrorLog.index;
+		errorLog = parsedErrorLog.messages;
+	}
+	await loadErrorLog();
+	async function logError(msg, fleetName) {
+		let timeStamp = "[" + new Date(Date.now()).toLocaleString("en-GB", { hour12: false }) + "]";
+		errorLog[errorLogIndex] = timeStamp + " " + (fleetName ? (fleetName + " ") : '') + msg;
+		errorLogIndex++;
+		if(errorLogIndex >= errorLogMaxEntries) errorLogIndex = 0;
+		let newErrorLog = { "index": errorLogIndex, "messages": errorLog };		
+		await GM.setValue('ErrorLog', JSON.stringify(newErrorLog));
+	}
+	let oldOnUnhandledRejection = window.onunhandledrejection;
+	window.onunhandledrejection = function(errorEvent) {
+		logError("Unhandled exception: " + errorEvent.reason.message + (!!errorEvent.reason.stack ? ("\nStack: " + errorEvent.reason.stack) : '') );
+		if(oldOnUnhandledRejection) oldOnUnhandledRejection(errorEvent);
+	};	
+	
 	function cLog(level, ...args) {	if(level <= globalSettings.debugLogLevel) console.log(...args); }
 	function wait(ms) {	return new Promise(resolve => {	setTimeout(resolve, ms); }); }
 	function TimeToStr(date) { return date.toLocaleTimeString("en-GB", { hour12: false, hour: "2-digit", minute: "2-digit" }); }
@@ -108,13 +134,25 @@
 			automaticFee: parseBoolDefault(globalSettings.automaticFee, false),
 			automaticFeeStep: parseIntDefault(globalSettings.automaticFeeStep, 80),
 			automaticFeeMin: parseIntDefault(globalSettings.automaticFeeMin, 1),
-			automaticFeeMax: parseIntDefault(globalSettings.automaticFeeMax, 12000),
-			automaticFeeTimeMin: parseIntDefault(globalSettings.automaticFeeTimeMin, 6),
-			automaticFeeTimeMax: parseIntDefault(globalSettings.automaticFeeTimeMax, 40),
+			automaticFeeMax: parseIntDefault(globalSettings.automaticFeeMax, 10000),
+			automaticFeeTimeMin: parseIntDefault(globalSettings.automaticFeeTimeMin, 10),
+			automaticFeeTimeMax: parseIntDefault(globalSettings.automaticFeeTimeMax, 70),
+
+			craftingTxMultiplier: parseIntDefault(globalSettings.craftingTxMultiplier, 200),
+			craftingTxAffectsAutoFee: parseBoolDefault(globalSettings.craftingTxAffectsAutoFee, true),
 
 			transportKeep1: parseBoolDefault(globalSettings.transportKeep1, false),
 			minerKeep1: parseBoolDefault(globalSettings.minerKeep1, false),
 			starbaseKeep1: parseBoolDefault(globalSettings.starbaseKeep1, false),
+
+			emailInterface: parseStringDefault(globalSettings.emailInterface,''),
+
+			emailFleetIxErrors: parseBoolDefault(globalSettings.emailFleetIxErrors, true),
+			emailCraftIxErrors: parseBoolDefault(globalSettings.emailCraftIxErrors, true),
+			emailNoCargoLoaded: parseBoolDefault(globalSettings.emailNoCargoLoaded, true),
+			emailNotEnoughFFA: parseBoolDefault(globalSettings.emailNotEnoughFFA, true),
+
+			fleetsPerColumn: parseIntDefault(globalSettings.fleetsPerColumn, 0),
 
 			//Percentage of the priority fees above should be used for all actions except scanning
 			//lowPriorityFeeMultiplier: parseIntDefault(globalSettings.lowPriorityFeeMultiplier, 10),
@@ -124,7 +162,7 @@
             savedProfile: globalSettings.savedProfile && globalSettings.savedProfile.length > 0 ? globalSettings.savedProfile : [],
 
 			//How many milliseconds to wait before re-reading the chain for confirmation
-			confirmationCheckingDelay: parseIntDefault(globalSettings.confirmationCheckingDelay, 10000),
+			confirmationCheckingDelay: parseIntDefault(globalSettings.confirmationCheckingDelay, 2000),
 
 			//How much console logging you want to see (higher number = more, 0 = none)
 			debugLogLevel: parseIntDefault(globalSettings.debugLogLevel, 3),
@@ -204,10 +242,10 @@
         let tempTotalRequests = solanaReadCount + solanaWriteCount;
         let tempMinsPassed = (Date.now()-started)/1000/60;
         let tempReqPerMin = (tempTotalRequests / tempMinsPassed).toFixed(2);
-        console.log('DEBUG tempTotalRequests:', tempTotalRequests);
-        console.log('DEBUG tempMinsPassed:', tempMinsPassed);
-        console.log('DEBUG tempReqPerMin:', tempReqPerMin);
-        content += '<tr><td colspan="4">RPC Requests: ' + solanaReadCount + ' reads | ' + solanaWriteCount + ' writes | ' + (tempTotalRequests / tempMinsPassed).toFixed(2) + ' per minute</td></tr>';
+        //console.log('DEBUG tempTotalRequests:', tempTotalRequests);
+        //console.log('DEBUG tempMinsPassed:', tempMinsPassed);
+        //console.log('DEBUG tempReqPerMin:', tempReqPerMin);
+        content += '<tr><td colspan="4">RPC Requests: ' + solanaReadCount + ' reads | ' + solanaWriteCount + ' writes | ' + (tempTotalRequests / tempMinsPassed).toFixed(2) + ' per minute | ' + solanaErrorCount + ' errors</td></tr>';
 		for (let group in groups) {
 			content += '<tr style="opacity:0.66"><td>'+group+'</td><td align="right">Count</td><td align="right">Total '+groups[group].TOTAL.unit+'</td><td align="right">Average '+groups[group].TOTAL.unit+'</td><td align="right">Last '+groups[group].TOTAL.unit+'</td></tr>';
 			let precision = +groups[group].TOTAL.precision;
@@ -222,7 +260,8 @@
 	//statsadd end
 
 	//autofee
-	async function alterFees(seconds) {
+	async function alterFees(seconds,opName) {
+		if((!globalSettings.craftingTxAffectsAutoFee) && (opName.includes('CRAFT') || opName.includes('UPGRADE'))) return;
 		const proportionFee = (globalSettings.automaticFeeMax <= globalSettings.automaticFeeMin) ? 1 : (currentFee - globalSettings.automaticFeeMin) / ( globalSettings.automaticFeeMax - globalSettings.automaticFeeMin );
 		let thresholdTime = (globalSettings.automaticFeeTimeMax - globalSettings.automaticFeeTimeMin) * proportionFee + globalSettings.automaticFeeTimeMin;
 		if(thresholdTime < globalSettings.automaticFeeTimeMin) { thresholdTime = globalSettings.automaticFeeTimeMin; }
@@ -266,14 +305,17 @@
 				(error.message === 'Failed to fetch') ||
 				(error.message.includes('failed to get')) ||
 				(error.message.includes('failed to send')) ||
+				(error.message.includes('NetworkError')) ||
 				(error.message.includes('Unable to complete request'))
 			);
+			// Added "NetworkError": It happens when Cloudflare blocks the request with Status Code 502. Error message: "TypeError: NetworkError when attempting to fetch resource at [...]"
 		}
 
 		let result;
 		try {
 			result = await origMethod.apply(target, args);
 		} catch (error1) {
+			solanaErrorCount++;
 			cLog(2, `${proxyType} CONNECTION ERROR: `, error1);
             cLog(2, `${proxyType} current RPC: ${target._rpcWsEndpoint}`);
 			if (isConnectivityError(error1)) {
@@ -286,15 +328,18 @@
 						result = await origMethod.apply(newConnection, args);
 						success = true;
 					} catch (error2) {
+						solanaErrorCount++;
 						cLog(2, `${proxyType} INNER ERROR: `, error2);
-						if (!isConnectivityError(error2)) return error2;
+						if (!isConnectivityError(error2)) { logError('Unrecoverable connection error: ' + error2); return error2; }
+						else { logError('Recoverable connection error (still trying): ' + error2); }
 					}
 					rpcIdx = rpcIdx+1 < rpcs.length ? rpcIdx+1 : 0;
 
 					//Prevent spam if errors are occurring immediately (disconnected from internet / unplugged cable)
-					await wait(500);
+					await wait(1000);
 				}
 			}
+			else { logError('Unrecoverable connection error: ' + error1); }
 		}
 		return result;
 	}
@@ -327,10 +372,12 @@
 	const solanaReadConnection = new Proxy(rawSolanaReadConnection, readConnectionProxy);
 	const rawSolanaWriteConnection = new solanaWeb3.Connection(writeRPCs[writeIdx], 'confirmed');
 	const solanaWriteConnection = new Proxy(rawSolanaWriteConnection, writeConnectionProxy);
-    let cachedEpochInfo = {'blockHeight': 0, 'lastUpdated': 0};
+    let cachedEpochInfo = {'blockHeight': 0, 'lastUpdated': 0, 'isUpdating': false};
 	let solanaReadCount = 0;
 	let solanaWriteCount = 0;
 	let tokenCheckCounter = 0;
+	let fleetStatusCount=0;
+	let fleetStatusCurColumn=0;	
     let globalErrorTracker = {'firstErrorTime': 0, 'errorCount': 0};
     cLog(1, `Read RPC: ${readRPCs[readIdx]}`);
     cLog(1, `Write RPC: ${writeRPCs[writeIdx]}`);
@@ -400,6 +447,7 @@
     let planetData = [];
     let minableResourceData = null;
     let starbasePlayerData = [];
+    let validTargets = [];
 
 	let currentFee = globalSettings.priorityFee; //autofee
 
@@ -431,10 +479,16 @@
 					},
 			},
 	]);
-
+    
+    cLog(0,'getResourceTokens()');
     await getResourceTokens();
+
+    cLog(0,'getCraftRecipes()');
     await getCraftRecipes();
+
+    cLog(0,'getALTs()');
     await getALTs();
+
     console.log('craftRecipes: ', craftRecipes);
     console.log('upgradeRecipes: ', upgradeRecipes);
 
@@ -486,7 +540,7 @@
         let solanaClock = await solanaReadConnection.getAccountInfo(new solanaWeb3.PublicKey('SysvarC1ock11111111111111111111111111111111'));
         let solanaTime = solanaClock.data.readBigInt64LE(8 * 4);
     }
-
+/*
     async function getCargoTypeSize(cargoType) {
         let cargoTypeAcct = await solanaReadConnection.getAccountInfo(cargoType.publicKey);
         let cargoTypeDataExtra = cargoTypeAcct.data.subarray(110);
@@ -551,6 +605,100 @@
         upgradeRecipes.sort(function (a, b) { return a.name.toUpperCase().localeCompare(b.name.toUpperCase()); });
         craftRecipes.sort(function (a, b) { return a.name.toUpperCase().localeCompare(b.name.toUpperCase()); });
     }
+*/
+
+    async function getCargoTypeSizes(cargoTypes) {
+	let publicKeys = [];
+	let cargoTypeSizes = [];
+	for(let i=0; i < cargoTypes.length; i++) {
+		publicKeys.push(cargoTypes[i].publicKey);
+	}
+	// 100 is the max data size of getMultipleAccountsInfo
+	for (let i = 0; i < publicKeys.length; i += 100) {
+		let publicKeysSlice = publicKeys.slice(i, i + 100);
+		let cargoTypeAccts = await solanaReadConnection.getMultipleAccountsInfo(publicKeys);
+		for(let j=0; j < cargoTypeAccts.length; j++) {
+			let cargoTypeDataExtra = cargoTypeAccts[j].data.subarray(110);
+			let cargoTypeDataExtraBuff = BrowserBuffer.Buffer.Buffer.from(cargoTypeDataExtra);
+			cargoTypeSizes[i + j] = cargoTypeDataExtraBuff.readUIntLE(0, 8);
+		}
+	}			
+	return cargoTypeSizes;
+    }
+    async function getResourceTokens() {
+        mineItems = await sageProgram.account.mineItem.all();
+        craftableItems = await craftingProgram.account.craftableItem.all();
+		
+	let cargoTypeSizes = await getCargoTypeSizes(cargoTypes);
+        for (let resource of mineItems) {
+            let cargoTypeIndex = cargoTypes.findIndex(item => item.account.mint.toString() === resource.account.mint.toString());
+            let cargoName = (new TextDecoder().decode(new Uint8Array(resource.account.name)).replace(/\0/g, ''));
+            let cargoSize = cargoTypeSizes[cargoTypeIndex];
+            cargoItems.push({'name': cargoName, 'token': resource.account.mint.toString(), 'size': cargoSize});
+        }
+        for (let craftable of craftableItems) {
+            let cargoTypeIndex = cargoTypes.findIndex(item => item.account.mint.toString() === craftable.account.mint.toString());
+            let cargoName = (new TextDecoder().decode(new Uint8Array(craftable.account.namespace)).replace(/\0/g, ''));
+            let cargoSize = cargoTypeSizes[cargoTypeIndex];
+            cargoItems.push({'name': cargoName, 'token': craftable.account.mint.toString(), 'size': cargoSize});
+        }
+        cargoItems.sort(function (a, b) { return a.name.toUpperCase().localeCompare(b.name.toUpperCase()); });
+    }
+
+    async function getCraftRecipes() {
+        const allCraftCategories = await craftingProgram.account.recipeCategory.all();
+        let upgradeCategory = allCraftCategories.find(item => (new TextDecoder().decode(new Uint8Array(item.account.namespace)).replace(/\0/g, '')) === 'Upgrade');
+
+        let statusBN = new BrowserAnchor.anchor.BN(2);
+        let statusArr = statusBN.toTwos(64).toArrayLike(BrowserBuffer.Buffer.Buffer, "be", 2);
+        let status58 = bs58.encode(statusArr);
+        const allCraftRecipes = await craftingProgram.account.recipe.all([
+            {
+                memcmp: {
+                    offset: 152,
+                    bytes: status58,
+                },
+            },
+        ]);
+
+	let publicKeys = [];
+	let recipeDatas = [];
+	for(let i=0; i < allCraftRecipes.length; i++) {
+		publicKeys.push(allCraftRecipes[i].publicKey);
+	}
+	// 100 is the max data size of getMultipleAccountsInfo
+	for (let i = 0; i < publicKeys.length; i += 100) {
+		let publicKeysSlice = publicKeys.slice(i, i + 100);
+		let recipeAcctInfos = await solanaReadConnection.getMultipleAccountsInfo(publicKeys);
+		for(let j=0; j < recipeAcctInfos.length; j++) {
+			recipeDatas[i + j] = recipeAcctInfos[j].data.subarray(223);
+		}
+	}			
+
+	let recipeIdx = 0;
+        for (let craftRecipe of allCraftRecipes) {
+            let recipeName = (new TextDecoder().decode(new Uint8Array(craftRecipe.account.namespace)).replace(/\0/g, ''));
+            let recipeInputOutput = [];
+            let recipeData = recipeDatas[recipeIdx];
+            let recipeIter = 0;
+            while (recipeData.length >= 40) {
+                let currIngredient = recipeData.subarray(0, 40);
+                let ingredientDecoded = craftingProgram.coder.types.decode('RecipeInputsOutputs', currIngredient);
+                recipeInputOutput.push({mint: ingredientDecoded.mint, amount: ingredientDecoded.amount.toNumber(), idx: recipeIter});
+                recipeData = recipeData.subarray(40);
+                recipeIter += 1;
+            }
+            if (craftRecipe.account.category.toString() === upgradeCategory.publicKey.toString()) {
+                upgradeRecipes.push({'name': recipeName, 'publicKey': craftRecipe.publicKey, 'category': craftRecipe.account.category, 'domain': craftRecipe.account.domain, 'feeRecipient': craftRecipe.account.feeRecipient.key, 'duration': craftRecipe.account.duration.toNumber(), 'input': recipeInputOutput, 'output': []});
+            } else if (recipeName !== 'SDU') {
+                craftRecipes.push({'name': recipeName, 'publicKey': craftRecipe.publicKey, 'category': craftRecipe.account.category, 'domain': craftRecipe.account.domain, 'feeAmount': craftRecipe.account.feeAmount.toNumber()/100000000, 'feeRecipient': craftRecipe.account.feeRecipient.key, 'duration': craftRecipe.account.duration.toNumber(), 'input': recipeInputOutput.slice(0, -1), 'output': recipeInputOutput.slice(-1)[0]});
+            }
+            recipeIdx++;
+        }
+        upgradeRecipes.sort(function (a, b) { return a.name.toUpperCase().localeCompare(b.name.toUpperCase()); });
+        craftRecipes.sort(function (a, b) { return a.name.toUpperCase().localeCompare(b.name.toUpperCase()); });
+    }
+
 
 	function createPDA(derived, derivedFrom1, derivedFrom2, fleet, send = true) {
 			return new Promise(async resolve => {
@@ -708,7 +856,7 @@
             let travelDistNew = Math.sqrt((startX - val[0]) ** 2 + (startY - val[1]) ** 2);
             if (globalSettings.subwarpShortDist && remainingDistOld > 0 && remainingDistNew < remainingDistOld && remainingDistNew < 1.5 && travelDistNew <= realWarpRange) {
                 return val;
-            } else if (globalSettings.subwarpShortDist && remainingDistOld < 1.5 && remainingDistNew >= 1.5) {
+            } else if (globalSettings.subwarpShortDist && remainingDistOld < 1.5 && remainingDistNew >= 1.5) {
                 return best;
             } else if (remainingDistNew <= realWarpRange && travelDistNew <= realWarpRange && remainingDistNew+travelDistNew < remainingDistOld+travelDistOld) {
                 return val;
@@ -793,7 +941,8 @@
             let yArr = yBN.toTwos(64).toArrayLike(BrowserBuffer.Buffer.Buffer, "le", 8);
             let y58 = bs58.encode(yArr);
 
-            let cachedStarbase = starbaseData.find(item => item.coords[0] == x && item.coords[1] == y);
+            let cachedStarbaseIdx = starbaseData.findIndex(item => item.coords[0] == x && item.coords[1] == y);
+            let cachedStarbase = (cachedStarbaseIdx >= 0 ? starbaseData[cachedStarbaseIdx] : null);
             let starbase = cachedStarbase && cachedStarbase.starbase;
             let needUpdate = cachedStarbase && Date.now() - cachedStarbase.lastUpdated > 1000*60*60*24 ? true : false;
 
@@ -812,7 +961,12 @@
                         }
                     },
                 ]);
-                starbaseData.push({coords: [x,y], lastUpdated: Date.now(), starbase: starbase});
+                if(cachedStarbaseIdx >= 0) { 
+                    starbaseData[cachedStarbaseIdx].lastUpdated = Date.now();
+                    starbaseData[cachedStarbaseIdx].starbase = starbase;
+                } else {
+                    starbaseData.push({coords: [x,y], lastUpdated: Date.now(), starbase: starbase});
+		}
             }
 
             resolve(starbase);
@@ -828,7 +982,8 @@
             let yArr = yBN.toTwos(64).toArrayLike(BrowserBuffer.Buffer.Buffer, "le", 8);
             let y58 = bs58.encode(yArr);
 
-            let cachedPlanet = planetData.find(item => item.coords[0] == x && item.coords[1] == y);
+            let cachedPlanetIdx = planetData.find(item => item.coords[0] == x && item.coords[1] == y);
+            let cachedPlanet = (cachedPlanetIdx >= 0 ? planetData[cachedPlanetIdx] : null);
             let planets = cachedPlanet && cachedPlanet.planets;
             let needUpdate = cachedPlanet && Date.now() - cachedPlanet.lastUpdated > 1000*60*60*24 ? true : false;
 
@@ -847,7 +1002,12 @@
                         }
                     },
                 ]);
-                planetData.push({coords: [x,y], lastUpdated: Date.now(), planets: planets});
+                if(cachedPlanetIdx >= 0) { 
+                    planetData[cachedPlanetIdx].lastUpdated = Date.now();
+                    planetData[cachedPlanetIdx].planets = planets;
+                } else {
+                    planetData.push({coords: [x,y], lastUpdated: Date.now(), planets: planets});
+		}
             }
 
             resolve(planets);
@@ -1068,6 +1228,7 @@
 		return token;
 	}
 
+/*
     async function localGetEpochInfo(fleet) {
         let curTimestamp = Date.now();
         let localBlockHeight;
@@ -1081,7 +1242,104 @@
         }
         return localBlockHeight;
     }
+*/
 
+    // localGetEpochInfo caches the last block height and estimates the current block height if the cached value has been requested recently.
+    async function localGetEpochInfo(fleet) {
+	const cachedValueExpires = 15000, useBlockTime = 450;
+        let curTimestamp = Date.now(), localBlockHeight = 0, loopCounter = 0;
+	// if another async call is already requesting the current blocktime, we wait for the result, but max 2.5 seconds (= 20 * 125ms)
+        while (cachedEpochInfo.isUpdating && (curTimestamp - cachedEpochInfo.lastUpdated) > cachedValueExpires && loopCounter < 20) {
+		await wait(125);
+		loopCounter++;
+		if(loopCounter >= 20 && cachedEpochInfo.isUpdating) cLog(1,`${FleetTimeStamp(fleet.label)} Concurrent read of block height took too long, forcing read`);
+	}
+        if ((curTimestamp - cachedEpochInfo.lastUpdated) > cachedValueExpires) {
+		// We request the current block height. We use a try/catch block, so if something goes wrong, we can be sure that "isUpdating" is reset
+		try {
+			cachedEpochInfo.isUpdating = true;
+			let {blockHeight: curBlockHeight} = await solanaReadConnection.getEpochInfo({ commitment: 'confirmed' });
+			cachedEpochInfo.blockHeight = curBlockHeight;
+			cachedEpochInfo.lastUpdated = Date.now(); // we must use the current time (instead of the previously saved timestamp), because it is possible that several re-reads occured (it would then lead to a block height that's way too high). Also it is possible that the while loop from above took some time.
+			localBlockHeight = curBlockHeight;
+			cLog(3,`${FleetTimeStamp(fleet.label)} using requested block height of`, localBlockHeight);
+			cachedEpochInfo.isUpdating = false;
+		} catch(error) {
+			// something went wrong, we reset "isUpdating" and use the cached value
+			localBlockHeight = cachedEpochInfo.blockHeight + Math.round((Date.now() - cachedEpochInfo.lastUpdated) / useBlockTime);
+			cachedEpochInfo.isUpdating = false;
+			cLog(1,`${FleetTimeStamp(fleet.label)} Uncaught error in localGetEpochInfo`, error);
+		}
+        } else {
+		// We estimate the current block height and use the current timestamp for the calculation, because it is possible that the above while loop took some time. The average block time is 420ms, but just to be sure we use a little more (450ms), so a tx doesn't expire too early.
+		localBlockHeight = cachedEpochInfo.blockHeight + Math.round((Date.now() - cachedEpochInfo.lastUpdated) / useBlockTime);
+		cLog(3,`${FleetTimeStamp(fleet.label)} using estimated block height of`, localBlockHeight);
+        }
+        return localBlockHeight;
+    }
+
+let signatureStatusQueue = [];
+	
+function requestSignatureStatus(txHash) {
+  return new Promise((resolve, reject) => {
+	signatureStatusQueue.push({ txHash, resolve, reject });
+  });
+}
+
+// The handler processes the queue and calls the corresponding callbacks with the result
+async function signatureStatusHandler() {
+	const currentHashes = signatureStatusQueue.splice(0, signatureStatusQueue.length);
+	if (currentHashes.length > 0) {
+			
+		const txHashes = currentHashes.map(req => req.txHash);
+		cLog(3,`Requesting`, currentHashes.length, `signature statuses at once`);
+			
+		try {
+			const signatureStatuses = await solanaReadConnection.getSignatureStatuses(txHashes);
+			//cLog(3,`Got signature results:`, signatureStatuses);
+			for (let i = 0 ; i < currentHashes.length; i++) {
+				const { resolve } = currentHashes[i];
+				const signatureStatus = { value: signatureStatuses.value[i] };
+				resolve(signatureStatus);
+			}
+		} catch(error) {
+			// If something goes wrong, we reject each request. If a promise of the queue was already resolved in the "try" block, the reject does (correctly) nothing and won't throw an error
+			for (const req of currentHashes) {
+				req.reject({err: error});
+			}
+		}
+	}
+	setTimeout(() => { signatureStatusHandler(); }, Math.max(2000, globalSettings.confirmationCheckingDelay));
+}	
+setTimeout(() => { signatureStatusHandler(); }, Math.max(2000, globalSettings.confirmationCheckingDelay));
+
+async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, fleet, opName) {
+	let curBlockHeight = await localGetEpochInfo(fleet);
+	let retryCount = 0;		
+	// loop until block height exceeded and give the RPC a little more time (20 blocks = ~8 seconds) to prevent race conditions (and take into account that the estimated block time can be slightly off). The loop doesn't need a wait time, because it is enforced by the signature queue (2 seconds)
+        while (curBlockHeight <= lastValidBlockHeight + 20) {
+		// we initially send the tx. Also we resend the tx every fourth loop (=~8 seconds), because: "With many transactions in the network queue, our initial send might get stuck behind a large backlog. While the blockhash is still valid, the transaction must still be seen and processed by validators. Continuously resending it can increase the chance that our transaction “bubbles up” to the front of processing queues.
+		if((retryCount % 4) == 0) {
+			txHash = await solanaWriteConnection.sendRawTransaction(txSerialized, {skipPreflight: true, maxRetries: 0, preflightCommitment: 'confirmed'});
+			cLog(3,`${FleetTimeStamp(fleet.label)} <${opName}>`,(retryCount > 0 ? 'TRYING 🌐' : ''),`txHash`, txHash, `/ last valid block`, lastValidBlockHeight, `/ cur block`, curBlockHeight);
+			if (!txHash) return {txHash, confirmation: {name: 'TransactionExpiredBlockheightExceededError'}};
+		}
+		const signatureStatus = await requestSignatureStatus(txHash);
+		if (signatureStatus.value && ['confirmed','finalized'].includes(signatureStatus.value.confirmationStatus)) {
+			cLog(3,`${FleetTimeStamp(fleet.label)} <${opName}> SIGNATURE FOUND ✅`);
+			return {txHash, confirmation: signatureStatus};
+		} else if (signatureStatus.err) {
+			cLog(3,`${FleetTimeStamp(fleet.label)} <${opName}> Err`,signatureStatus.err);
+			return {txHash, confirmation: signatureStatus}
+		}
+		curBlockHeight = await localGetEpochInfo(fleet); // todo: if for some reason the request of the block height takes a very long time (e.g. 20 seconds) and the block height is near the block limit, it is possible that the loop will exit without doing a final signature check.
+		retryCount++;			
+	}
+        return {txHash, confirmation: {name: 'TransactionExpiredBlockheightExceededError'}};		
+}
+
+
+/*
 	async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, fleet, opName, interval) {
         let curBlockHeight = await localGetEpochInfo(fleet);
 		let interimBlockHeight = curBlockHeight;
@@ -1111,49 +1369,7 @@
 		cLog(3,`${FleetTimeStamp(fleet.label)} <${opName}> TRYING 🌐`);
 		return await sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, fleet, opName, interval);
 	}
-
-	/*
- 	// Swift's replacement:
-	async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, fleet, opName) {
-		let {blockHeight: curBlockHeight} = await solanaReadConnection.getEpochInfo({ commitment: 'confirmed' });
-		txHash = await solanaWriteConnection.sendRawTransaction(txSerialized, {skipPreflight: true, maxRetries: 0, preflightCommitment: 'confirmed'});
-		cLog(3,`${FleetTimeStamp(fleet.label)} <${opName}> txHash`, txHash, `, last valid block `, lastValidBlockHeight, `, cur block `, curBlockHeight);
-
-		let pollDelay = Math.max(2500, globalSettings.confirmationCheckingDelay);
-		let retryCount = 0;
-		let pollDelayAdd = 0;
-
-		// loop until block height exceeded and give the RPC a little more time (12 blocks = ~6 seconds) to prevent race conditions
-		while (curBlockHeight <= lastValidBlockHeight + 12) {
-
-				if(retryCount > 0 && (retryCount % 3) == 0) { // re-send the tx after every 3rd poll to force the queuing the tx again
-					txHash = await solanaWriteConnection.sendRawTransaction(txSerialized, {skipPreflight: true, maxRetries: 0, preflightCommitment: 'confirmed'});
-					cLog(3,`${FleetTimeStamp(fleet.label)} <${opName}> txHash`, txHash, `, last valid block `, lastValidBlockHeight, `, cur block `, curBlockHeight);
-					if (!txHash) return {txHash, confirmation: {name: 'TransactionExpiredBlockheightExceededError'}};
-				}
-
-				await wait(pollDelay);
-
-				const signatureStatus = await solanaReadConnection.getSignatureStatus(txHash);
-				if (signatureStatus.value && ['confirmed','finalized'].includes(signatureStatus.value.confirmationStatus)) {
-						cLog(3,`${FleetTimeStamp(fleet.label)} <${opName}> SIGNATURE FOUND ✅`);
-						return {txHash, confirmation: signatureStatus};
-				} else if (signatureStatus.err) {
-						cLog(3,`${FleetTimeStamp(fleet.label)} <${opName}> Err`,signatureStatus.err);
-						return {txHash, confirmation: signatureStatus}
-				}
-				let epochInfo = await solanaReadConnection.getEpochInfo({ commitment: 'confirmed' });
-				curBlockHeight = epochInfo.blockHeight;
-				pollDelayAdd += 200;
-				pollDelay += pollDelayAdd;
-				retryCount++;
-				cLog(3,`${FleetTimeStamp(fleet.label)} <${opName}> STILL POLLING TX 🌐 [try`,(retryCount+1),`, wait`,pollDelay,`ms]`);
-		}
-
-		return {txHash, confirmation: {name: 'TransactionExpiredBlockheightExceededError'}};
-	}
- 	*/
-
+ */
 
 	function txSignAndSend(ix, fleet, opName, priorityFeeMultiplier, extraSigner=false) {
 		return new Promise(async resolve => {
@@ -1203,6 +1419,8 @@
 				let txSigned = null;
                 cLog(4,`${FleetTimeStamp(fleetName)} <${opName}> tx: `, tx);
 
+		const signStart = Date.now();
+
                 try {
                     if (typeof solflare === 'undefined') {
                         txSigned = phantom && phantom.solana ? await phantom.solana.signAllTransactions([tx]) : solana.signAllTransactions([tx]);
@@ -1220,14 +1438,18 @@
                     }
                 }
 
+		const signMsTaken = Date.now() - signStart;
+		if(signMsTaken>2000) cLog(2,`${FleetTimeStamp(fleetName)} <${opName}> WARNING: Signing of tx took`,signMsTaken,`milliseconds`);
+		document.getElementById('assist-modal-time').innerHTML='Last sign time: <span style="color:'+(signMsTaken >= 2000 ? (signMsTaken >= 20000 ? 'Red' : 'Yellow') : 'inherit')+'">'+(signMsTaken/1000).toFixed(1) + 's</span>';
+
                 cLog(4,`${FleetTimeStamp(fleetName)} <${opName}> txSigned: `, txSigned);
 				let txSerialized = await txSigned[0].serialize();
                 cLog(4,`${FleetTimeStamp(fleetName)} <${opName}> txSerialized: `, txSerialized);
 
 				let microOpStart = Date.now();
-				cLog(2,`${FleetTimeStamp(fleetName)} <${opName}> SEND ➡️ lastValidBlockHeight+25: `, latestBH.lastValidBlockHeight+25);
+				cLog(2,`${FleetTimeStamp(fleetName)} <${opName}> SEND ➡️ lastValidBlockHeight: `, latestBH.lastValidBlockHeight);
                 // Adding a 25 block buffer before considering a transaction expired
-				let response = await sendAndConfirmTx(txSerialized, latestBH.lastValidBlockHeight + 25, null, fleet, opName, 10);
+				let response = await sendAndConfirmTx(txSerialized, latestBH.lastValidBlockHeight, null, fleet, opName);
 				let txHash = response.txHash;
 				let confirmation = response.confirmation;
 				let txResult = txHash ? await solanaReadConnection.getTransaction(txHash, {commitment: 'confirmed', preflightCommitment: 'confirmed', maxSupportedTransactionVersion: 1}) : undefined;
@@ -1243,6 +1465,12 @@
                     cLog(2,`${FleetTimeStamp(fleetName)} <${opName}> ERROR ❌ The instruction resulted in an error.`);
                     let ixError = txResult && txResult.meta && txResult.meta.logMessages ? txResult.meta.logMessages : 'Unknown';
                     console.log(FleetTimeStamp(fleetName), ' txResult.logMessages: ', ixError);
+                    logError('ix error: ' + ixError, fleetName);
+                    if(fleet.publicKey) {
+                    	if(globalSettings.emailFleetIxErrors) await sendEMail(fleetName + ' ix error', ixError);
+                    } else {
+                    	if(globalSettings.emailCraftIxErrors) await sendEMail(fleetName + ' ix error', ixError);
+                    }
                 }
 
 				const confirmationTimeStr = `${Date.now() - microOpStart}ms`;
@@ -1251,13 +1479,13 @@
 					cLog(2,`${FleetTimeStamp(fleetName)} <${opName}> CONFIRM ❌ ${confirmationTimeStr}`);
 					cLog(2,`${FleetTimeStamp(fleetName)} <${opName}> RESEND 🔂`);
 					await alterStats('Txs Resent',opName,(Date.now() - macroOpStart)/1000,'Seconds',1); //statsadd
-					await alterFees(-1); //autofee
+					await alterFees(-1, opName); //autofee
 					continue; //retart loop to try again
 				}
 
 				let tryCount = 1;
 				if (!confirmation.name) {
-					cLog(3,`${FleetTimeStamp(fleetName)} <${opName}> Polling transaction until successful`);
+					if(!txResult) cLog(3,`${FleetTimeStamp(fleetName)} <${opName}> Polling transaction until successful`);
 					while (!txResult) {
 						tryCount++;
 						if(tryCount >= 130) {
@@ -1286,7 +1514,7 @@
 				await alterStats('SOL Fees',undefined,txResult.meta.fee*0.000000001,'SOL',7); // undefined name => only totals tracked //statsadd
 				let statGroup = ((confirmation && confirmation.value && confirmation.value.err && confirmation.value.err.InstructionError) || (txResult && txResult.meta && txResult.meta.err && txResult.meta.err.InstructionError)) ? 'Txs IxErrors' : 'Txs Confirmed'; //statsadd
 				await alterStats(statGroup,opName,fullMsTaken/1000,'Seconds',1); //statsadd
-				await alterFees(fullMsTaken/1000); //autofee
+				await alterFees(fullMsTaken/1000, opName); //autofee
 
 				resolve(txResult);
 			}
@@ -2452,7 +2680,7 @@
                 }).remainingAccounts(startCraftProcRemainingAccts).instruction()}
             transactions.push(tx2);
 
-            let txResult = {craftingId: formattedRandomBytes, result: await txSignAndSend(transactions, userCraft, 'START CRAFTING', 250)};
+            let txResult = {craftingId: formattedRandomBytes, result: await txSignAndSend(transactions, userCraft, 'START CRAFTING', Math.min(globalSettings.craftingTxMultiplier, 500) )};
 
             // statsadd start
             let postTokenBalances = txResult.result.meta.postTokenBalances;
@@ -2642,7 +2870,7 @@
             transactions.push(tx2);
 
             //let txResult = await txSignAndSend(tx2, userCraft, 'COMPLETING CRAFT TX2');
-            let txResult = await txSignAndSend(transactions, userCraft, 'COMPLETING CRAFT', 250);
+            let txResult = await txSignAndSend(transactions, userCraft, 'COMPLETING CRAFT', Math.min(globalSettings.craftingTxMultiplier, 500) );
 
             // Allow RPC to catch up (to be sure the crew is available before starting the next job)
             await wait(4000);
@@ -2834,7 +3062,7 @@
             }).instruction()};
             transactions.push(tx2);
 
-            let txResult = await txSignAndSend(transactions, userCraft, 'COMPLETING UPGRADE', 250, userRedemptionAcct);
+            let txResult = await txSignAndSend(transactions, userCraft, 'COMPLETING UPGRADE', Math.min(globalSettings.craftingTxMultiplier, 500), userRedemptionAcct);
 
             resolve(txResult);
         });
@@ -2931,8 +3159,35 @@
 			fleetDestCoord.style.width = '50px';
 			fleetDestCoord.value = fleetParsedData && fleetParsedData.dest ? fleetParsedData.dest : '';
 			let fleetDestCoordTd = document.createElement('td');
+			fleetDestCoord.style.display = fleetParsedData && fleetParsedData.assignment == 'Scan' ? 'inline-block' : 'none';
 			fleetDestCoordTd.appendChild(fleetDestCoord);
 
+			let fleetDestCoordSelect = document.createElement('select');
+			fleetDestCoordSelect.style.width = '80px';
+			fleetDestCoordSelect.appendChild(document.createElement('option'))
+			validTargets.forEach(target => {
+				let fleetDestCoordOption = document.createElement('option');
+				fleetDestCoordOption.value = target.x + ',' + target.y;
+				fleetDestCoordOption.innerHTML = target.name + '&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[' + target.x + ',' + target.y + ']';
+				if(fleetParsedData && fleetDestCoordOption.value == fleetParsedData.dest) fleetDestCoordOption.setAttribute('selected', 'selected');
+				fleetDestCoordSelect.appendChild(fleetDestCoordOption);
+			});
+			fleetDestCoordSelect.style.display = fleetParsedData && fleetParsedData.assignment == 'Scan' ? 'none' : 'inline-block';
+			fleetDestCoordTd.appendChild(fleetDestCoordSelect);
+
+			let fleetStarbaseCoordSelect = document.createElement('select');
+			fleetStarbaseCoordSelect.style.width = '80px';
+			fleetStarbaseCoordSelect.appendChild(document.createElement('option'))
+			validTargets.forEach(target => {
+				let fleetStarbaseCoordOption = document.createElement('option');
+				fleetStarbaseCoordOption.value = target.x + ',' + target.y;
+				fleetStarbaseCoordOption.innerHTML = target.name + '&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[' + target.x + ',' + target.y + ']';
+				if(fleetParsedData && fleetStarbaseCoordOption.value == fleetParsedData.starbase) fleetStarbaseCoordOption.setAttribute('selected', 'selected');
+				fleetStarbaseCoordSelect.appendChild(fleetStarbaseCoordOption);
+			});
+			let fleetStarbaseCoordTd = document.createElement('td');
+			fleetStarbaseCoordTd.appendChild(fleetStarbaseCoordSelect);
+			/*
 			let fleetStarbaseCoord = document.createElement('input');
 			fleetStarbaseCoord.setAttribute('type', 'text');
 			fleetStarbaseCoord.placeholder = 'x, y';
@@ -2940,6 +3195,7 @@
 			fleetStarbaseCoord.value = fleetParsedData && fleetParsedData.starbase ? fleetParsedData.starbase : '';
 			let fleetStarbaseCoordTd = document.createElement('td');
 			fleetStarbaseCoordTd.appendChild(fleetStarbaseCoord);
+   			*/
 
 			let fleetSubwarpPref = document.createElement('input');
 			fleetSubwarpPref.setAttribute('type', 'checkbox');
@@ -3227,24 +3483,32 @@
 							transportRow.style.display = 'none';
 							padRow.style.display = 'table-row';
 							fleetRow.classList.add('show-top-border');
+							fleetDestCoord.style.display = 'inline-block';
+							fleetDestCoordSelect.style.display = 'none';
 					} else if (fleetAssignment.value == 'Mine') {
 							mineRow.style.display = 'table-row';
 							scanRow.style.display = 'none';
 							transportRow.style.display = 'none';
 							padRow.style.display = 'table-row';
 							fleetRow.classList.add('show-top-border');
+							fleetDestCoord.style.display = 'none';
+							fleetDestCoordSelect.style.display = 'inline-block';
 					} else if (fleetAssignment.value == 'Transport') {
 							transportRow.style.display = 'table-row';
 							scanRow.style.display = 'none';
 							mineRow.style.display = 'none';
 							padRow.style.display = 'table-row';
 							fleetRow.classList.add('show-top-border');
+							fleetDestCoord.style.display = 'none';
+							fleetDestCoordSelect.style.display = 'inline-block';
 					} else {
 							scanRow.style.display = 'none';
 							mineRow.style.display = 'none';
 							transportRow.style.display = 'none';
 							padRow.style.display = 'none';
 							fleetRow.classList.remove('show-top-border');
+							fleetDestCoord.style.display = 'none';
+							fleetDestCoordSelect.style.display = 'inline-block';
 					}
 			};
 	}
@@ -3261,13 +3525,28 @@
         let craftLabelTd = document.createElement('td');
         craftLabelTd.appendChild(craftLabel);
 
-        let craftStarbaseCoord = document.createElement('input');
+        /*
+	let craftStarbaseCoord = document.createElement('input');
         craftStarbaseCoord.setAttribute('type', 'text');
         craftStarbaseCoord.placeholder = 'x, y';
         craftStarbaseCoord.style.width = '50px';
         craftStarbaseCoord.value = craftParsedData && craftParsedData.coordinates ? craftParsedData.coordinates : '';
         let craftStarbaseCoordTd = document.createElement('td');
         craftStarbaseCoordTd.appendChild(craftStarbaseCoord);
+	*/
+
+	let craftStarbaseCoordSelect = document.createElement('select');
+	craftStarbaseCoordSelect.style.width = '80px';
+	craftStarbaseCoordSelect.appendChild(document.createElement('option'))
+	validTargets.forEach(target => {
+		let craftStarbaseCoordOption = document.createElement('option');
+		craftStarbaseCoordOption.value = target.x + ',' + target.y;
+		craftStarbaseCoordOption.innerHTML = target.name + '&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[' + target.x + ',' + target.y + ']';
+		if(craftParsedData && craftStarbaseCoordOption.value == craftParsedData.coordinates) craftStarbaseCoordOption.setAttribute('selected', 'selected');
+		craftStarbaseCoordSelect.appendChild(craftStarbaseCoordOption);
+	});		
+        let craftStarbaseCoordTd = document.createElement('td');
+        craftStarbaseCoordTd.appendChild(craftStarbaseCoordSelect);
 
         let craftCrew = document.createElement('input');
         craftCrew.setAttribute('type', 'text');
@@ -3289,7 +3568,7 @@
         let craftAmount = document.createElement('input');
         craftAmount.setAttribute('type', 'text');
         craftAmount.placeholder = '0';
-        craftAmount.style.width = '60px';
+        craftAmount.style.width = '70px';
         craftAmount.style.marginRight = '10px';
         craftAmount.value = craftParsedData && craftParsedData.amount ? craftParsedData.amount : '';
         let craftItemDiv = document.createElement('div');
@@ -3308,7 +3587,7 @@
     }
 
 	async function resetFleetState(fleet) {
-		if (fleet.state.includes('ERROR') && !fleet.state.includes('⌛')) {
+		if ((fleet.state.includes('ERROR') && !fleet.state.includes('⌛')) || fleet.state.includes('STOPPED')) {
 			let userFleetIndex = userFleets.findIndex(item => {return item.publicKey == fleet.publicKey});
 			cLog(1,`${FleetTimeStamp(fleet.label)} Manual request for resetting the fleet state`);
 			updateFleetState(fleet,'ERROR: Trying to restart ...',true); // keep string "ERROR" for now to prevent an early start of operateFleet()
@@ -3321,8 +3600,16 @@
 			fleet.startingCoords = fleetCoords;
 			fleet.iterCnt=0;
 			fleet.resupplying=false;
-			updateFleetState(fleet, fleetState, true);
+			fleet.moveTarget = '';
+			fleet.stopping = false;
+			//updateFleetState(fleet, fleetState, true);
+			updateFleetState(fleet, 'Starting', true);
+			fleet.state = fleetState; // overwrite "starting" with the real state but don't display it - just like in toggleAssistant
 		}
+		else {
+			fleet.stopping = true;
+			updateFleetState(fleet, 'Stopping ...');
+		}		
 	}
 
 
@@ -3336,10 +3623,27 @@
 				targetRow[0].children[2].firstChild.innerHTML = fleet.sduCnt || 0;
 				targetRow[0].children[3].firstChild.innerHTML = fleet.state;
 			} else {
-				targetRow[0].children[0].firstChild.innerHTML = fleet.label + " [" + fleet.coordinates + "]";
+				//targetRow[0].children[0].firstChild.innerHTML = fleet.label + " [" + fleet.coordinates + "]";
+				let target = validTargets.find(target => (target.x + ',' + target.y) == fleet.coordinates);
+				targetRow[0].children[0].firstChild.innerHTML = fleet.label + " " + target?.name;
 				targetRow[0].children[1].firstChild.innerHTML = fleet.state;
 			}
 		} else {
+			if((globalSettings.fleetsPerColumn <= 0 && fleetStatusCount == 0) || (globalSettings.fleetsPerColumn > 0 && (fleetStatusCount % globalSettings.fleetsPerColumn) == 0)) {
+				fleetStatusCurColumn++;
+								
+				let fleetColumn = document.createElement('td');
+				fleetColumn.setAttribute('valign', 'top');
+				if(fleetStatusCurColumn > 1) fleetColumn.setAttribute('style','padding-left:10px; border-left:1px solid rgb(255, 190, 77)');
+
+				fleetColumn.classList.add('assist-fleet-column-'+fleetStatusCurColumn);
+				fleetColumn.innerHTML = '<table><tr><td>Fleet</td><td>Food</td><td>SDUs</td><td>State</td></tr></table>';
+				
+				let targetTableElem = document.querySelector('#assistStatus .assist-modal-body table.main tr');
+				targetTableElem.appendChild(fleetColumn);
+			}
+			fleetStatusCount++;
+			
 			let fleetRow = document.createElement('tr');
 			fleetRow.classList.add('assist-fleet-row');
 			fleetRow.setAttribute('pk', rowPK);
@@ -3368,11 +3672,12 @@
 			} else {
 				fleetStatusTd.setAttribute('colspan', 3);
 				fleetStatusTd.appendChild(fleetStatus);
-				fleetLabel.innerHTML = fleetLabel.innerHTML + " [" + fleet.coordinates + "]";
+				let target = validTargets.find(target => (target.x + ',' + target.y) == fleet.coordinates);
+				fleetLabel.innerHTML = fleetLabel.innerHTML + " " + target?.name;
 				fleetRow.appendChild(fleetLabelTd);
 				fleetRow.appendChild(fleetStatusTd);
 			}
-			let targetElem = document.querySelector('#assistStatus .assist-modal-body table');
+			let targetElem = document.querySelector('#assistStatus .assist-modal-body table.main td.assist-fleet-column-'+fleetStatusCurColumn+' table');
 			targetElem.appendChild(fleetRow);
 		}
 
@@ -3490,6 +3795,18 @@
 		return scanBlock;
 	}
 
+	async function clearErrors() {
+		errorLog = [];
+		errorLogIndex = 0;
+		let newErrorLog = { "index": errorLogIndex, "messages": errorLog };		
+		await GM.setValue('ErrorLog', JSON.stringify(newErrorLog));
+		await reloadErrors();
+	}
+	async function reloadErrors() {
+		await assistErrorToggle();
+		await assistErrorToggle();
+	}
+
 	async function saveAssistInput() {
 		function validateCoordInput(coord) { return coord ? coord.replace('.', ',') : ''; }
 		let fleetRows = document.querySelectorAll('#assistModal .assist-fleet-row');
@@ -3517,7 +3834,13 @@
 			let fleetPK = row.getAttribute('pk');
 			let fleetName = row.children[0].firstChild.innerText;
 			let fleetAssignment = row.children[1].firstChild.value;
-			let fleetDestCoord = validateCoordInput(row.children[2].firstChild.value);	//fleetDestCoord = fleetDestCoord ? fleetDestCoord.replace('.', ',') : fleetDestCoord;
+			//let fleetDestCoord = validateCoordInput(row.children[2].firstChild.value);	//fleetDestCoord = fleetDestCoord ? fleetDestCoord.replace('.', ',') : fleetDestCoord;
+			let fleetDestCoord = null;
+			if(fleetAssignment == 'Scan') {
+				fleetDestCoord = validateCoordInput(row.children[2].firstChild.value);	//fleetDestCoord = fleetDestCoord ? fleetDestCoord.replace('.', ',') : fleetDestCoord;
+			} else {
+				fleetDestCoord = validateCoordInput(row.children[2].children[1].value);
+			}			
 			let fleetStarbaseCoord = validateCoordInput(row.children[3].firstChild.value);	//fleetStarbaseCoord = fleetStarbaseCoord ? fleetStarbaseCoord.replace('.', ',') : fleetStarbaseCoord;
 			let subwarpPref = row.children[4].firstChild.checked;
 			let userFleetIndex = userFleets.findIndex(item => {return item.publicKey == fleetPK});
@@ -3656,6 +3979,25 @@
 		}
 	}
 
+	async function assistErrorToggle() {
+		let targetElem = document.querySelector('#errorModal');
+		if (targetElem.style.display === 'none') {
+			targetElem.style.display = 'block';
+			let importText = document.querySelector('#errorText');
+			let curIdx=errorLogIndex - 1;
+			if(curIdx < 0) curIdx = errorLogMaxEntries - 1;
+			importText.value = '';
+			for(let i=0; i<errorLogMaxEntries; i++) {				
+				if(!errorLog[curIdx]) break;
+				importText.value += errorLog[curIdx] + "\n\n";
+				curIdx--;
+				if(curIdx<0) curIdx = errorLogMaxEntries - 1;
+			}			
+		} else {
+			targetElem.style.display = 'none';
+		}
+	}
+
 	async function assistStatToggle(el) { //statsadd
 		let targetElem = document.querySelector(el);
 		if (targetElem.style.display === 'none') {
@@ -3726,18 +4068,30 @@
 			automaticFee: document.querySelector('#automaticFee').checked,
 			automaticFeeStep: parseIntDefault(document.querySelector('#automaticFeeStep').value, 80),
 			automaticFeeMin: parseIntDefault(document.querySelector('#automaticFeeMin').value, 1),
-			automaticFeeMax: parseIntDefault(document.querySelector('#automaticFeeMax').value, 12000),
-			automaticFeeTimeMin: parseIntDefault(document.querySelector('#automaticFeeTimeMin').value, 6),
-			automaticFeeTimeMax: parseIntDefault(document.querySelector('#automaticFeeTimeMax').value, 40),
+			automaticFeeMax: parseIntDefault(document.querySelector('#automaticFeeMax').value, 10000),
+			automaticFeeTimeMin: parseIntDefault(document.querySelector('#automaticFeeTimeMin').value, 10),
+			automaticFeeTimeMax: parseIntDefault(document.querySelector('#automaticFeeTimeMax').value, 70),
 
+			craftingTxMultiplier: parseIntDefault(document.querySelector('#craftingTxMultiplier').value, 200),
+			craftingTxAffectsAutoFee: document.querySelector('#craftingTxAffectsAutoFee').checked,
+			
 			transportKeep1: document.querySelector('#transportKeep1').checked,
 			minerKeep1: document.querySelector('#minerKeep1').checked,
 			starbaseKeep1: document.querySelector('#starbaseKeep1').checked,
 
+			emailInterface: parseStringDefault(document.querySelector('#emailInterface').value,''),
+
+			emailFleetIxErrors: document.querySelector('#emailFleetIxErrors').checked,
+			emailCraftIxErrors: document.querySelector('#emailCraftIxErrors').checked,
+			emailNoCargoLoaded: document.querySelector('#emailNoCargoLoaded').checked,
+			emailNotEnoughFFA: document.querySelector('#emailNotEnoughFFA').checked,
+
+			fleetsPerColumn: parseIntDefault(document.querySelector('#fleetsPerColumn').value, 0),
+
 			//lowPriorityFeeMultiplier: parseIntDefault(document.querySelector('#lowPriorityFeeMultiplier').value, 10),
             saveProfile: saveProfile,
             savedProfile: saveProfile ? (userProfileAcct && userProfileKeyIdx) ? [userProfileAcct.toString(), userProfileKeyIdx, pointsProfileKeyIdx] : [] : [],
-			confirmationCheckingDelay: parseIntDefault(document.querySelector('#confirmationCheckingDelay').value, 10000),
+			confirmationCheckingDelay: parseIntDefault(document.querySelector('#confirmationCheckingDelay').value, 2000),
 			debugLogLevel: parseIntDefault(document.querySelector('#debugLogLevel').value, 3),
             craftingJobs: parseIntDefault(document.querySelector('#craftingJobs').value, 4),
 			subwarpShortDist: document.querySelector('#subwarpShortDist').checked,
@@ -3781,9 +4135,21 @@
 		document.querySelector('#automaticFeeTimeMin').value = globalSettings.automaticFeeTimeMin;
 		document.querySelector('#automaticFeeTimeMax').value = globalSettings.automaticFeeTimeMax;
 
+		document.querySelector('#craftingTxMultiplier').value = globalSettings.craftingTxMultiplier;
+		document.querySelector('#craftingTxAffectsAutoFee').checked = globalSettings.craftingTxAffectsAutoFee;
+		
 		document.querySelector('#transportKeep1').checked = globalSettings.transportKeep1;
 		document.querySelector('#minerKeep1').checked = globalSettings.minerKeep1;
 		document.querySelector('#starbaseKeep1').checked = globalSettings.starbaseKeep1;
+
+		document.querySelector('#emailInterface').value = globalSettings.emailInterface;
+
+		document.querySelector('#emailFleetIxErrors').checked = globalSettings.emailFleetIxErrors;
+		document.querySelector('#emailCraftIxErrors').checked = globalSettings.emailCraftIxErrors;
+		document.querySelector('#emailNoCargoLoaded').checked = globalSettings.emailNoCargoLoaded;
+		document.querySelector('#emailNotEnoughFFA').checked = globalSettings.emailNotEnoughFFA;
+
+		document.querySelector('#fleetsPerColumn').value = globalSettings.fleetsPerColumn;
 
 		//document.querySelector('#lowPriorityFeeMultiplier').value = globalSettings.lowPriorityFeeMultiplier;
         document.querySelector('#saveProfile').checked = globalSettings.saveProfile;
@@ -4108,8 +4474,12 @@
 							updateFleetState(userFleets[i], `Warp C/D ${warpCDExpireTimeStr}`);
 						}
 
-						await wait(Math.max(1000, warpCooldownExpiresAt - Date.now()));
-					}	await wait(2000); //Extra wait to ensure accuracy
+						//await wait(Math.max(1000, warpCooldownExpiresAt - Date.now()));
+						if(warpCooldownExpiresAt - Date.now() < 5000) await wait(Math.max(1000, warpCooldownExpiresAt - Date.now()));
+						else await wait(5000);						
+						if(userFleets[i].stopping) return;
+					}	
+					await wait(2000); //Extra wait to ensure accuracy
 
 					//Calculate next warp point if more than 1 is needed to arrive at final destination
 					if (moveDist > userFleets[i].maxWarpDistance / 100) {
@@ -4136,6 +4506,7 @@
 				} else {
 					cLog(1,`${FleetTimeStamp(userFleets[i].label)} Unable to move, lack of fuel`);
 					updateFleetState(userFleets[i], 'ERROR: Not enough fuel');
+					if(globalSettings.emailNotEnoughFFA) await sendEMail(userFleets[i].label + ' not enough fuel', '');
 				}
 			}
 		}
@@ -4263,6 +4634,8 @@
 			}
 		}
 
+		if(userFleets[i].stopping) return;
+
 		if (!moved && Date.now() > userFleets[i].scanEnd) {
 			userFleets[i].lastScanCoord = userFleets[i].destCoord;
 			if(!userFleets[i].scanStrikes) userFleets[i].scanStrikes = 0;
@@ -4279,6 +4652,7 @@
 					sduFound = changesSDU.postBalance - changesSDU.preBalance;
 					userFleets[i].scanSkipCnt = 0;
 			}
+			await alterStats('SDUs found',undefined,sduFound,'SDU',0);
 
 			cLog(1,`${FleetTimeStamp(userFleets[i].label)} 📡 ${Math.round(scanCondition)}%${sduFound > 0 ? ` | 💰 FOUND: ${sduFound}` : ''}`);
 			if(!sduFound && scanCondition < userFleets[i].scanMin) {
@@ -4331,8 +4705,10 @@
 
 		}
 		else if (!moved && Date.now() < userFleets[i].scanEnd && userFleets[i].state == 'Idle') {
+			userFleets[i].lastScanCoord = userFleets[i].destCoord;
 			const scanCDExpireTimeStr = `[${TimeToStr(new Date(userFleets[i].scanEnd))}]`;
 			updateFleetState(userFleets[i], 'Waiting for scan cooldown ' + scanCDExpireTimeStr);
+			//await wait(userFleets[i].scanEnd - Date.now());
 		}
 	}
 
@@ -4386,7 +4762,7 @@
 			const foodCargo = await solanaReadConnection.getTokenAccountBalance(userFleets[i].foodToken);
 			userFleets[i].foodCnt = foodCargo.value.amount;
 
-			//Were enough food loaded?
+			//Was enough food loaded?
 			if (userFleets[i].foodCnt < userFleets[i].scanCost) {
 				cLog(1,`${FleetTimeStamp(userFleets[i].label)} ERROR: Not enough food at starbase - waiting for more`);
 				updateFleetState(userFleets[i], `ERROR: No food ⌛ ${TimeToStr(new Date(Date.now() + errorWaitTime))}`);
@@ -4711,12 +5087,14 @@
 
 					if (errorResource.length > 0) {
 						updateFleetState(userFleets[i], `ERROR: Not enough ${errorResource.toString()}`);
+						if(globalSettings.emailNotEnoughFFA) await sendEMail(userFleets[i].label + ' not enough ' + errorResource.toString(), '');
 					} else {
 						await execUndock(userFleets[i], userFleets[i].starbaseCoord);
 					}
 					//await wait(2000);
 					//userFleets[i].moveTarget = userFleets[i].destCoord;
 				} else {
+					if(userFleets[i].stopping) return;
 					userFleets[i].moveTarget = userFleets[i].starbaseCoord;
 					await handleMineMovement();
 				}
@@ -4724,6 +5102,7 @@
 
 			//At mining area?
 			else if (fleetCoords[0] == destX && fleetCoords[1] == destY) {
+		if(userFleets[i].stopping) return;
                 fleetCurrentCargo = await solanaReadConnection.getParsedTokenAccountsByOwner(userFleets[i].cargoHold, {programId: tokenProgramPK});
                 cargoCnt = fleetCurrentCargo.value.reduce((n, {account}) => n + account.data.parsed.info.tokenAmount.uiAmount, 0);
                 currentFood = fleetCurrentCargo.value.find(item => item.account.data.parsed.info.mint === sageGameAcct.account.mints.food.toString());
@@ -4745,10 +5124,13 @@
 
 			//Move to mining area
 			else {
+				if(userFleets[i].stopping) return;
 				userFleets[i].moveTarget = userFleets[i].destCoord;
 				await handleMineMovement();
 			}
 		}
+
+		if(userFleets[i].stopping) return;
 
 		//Already mining?
 		if (userFleets[i].state.slice(0, 4) === 'Mine' && fleetMining) {
@@ -4935,6 +5317,8 @@
                 cLog(3,`${FleetTimeStamp(userFleets[i].label)} userFleets[i]: `, userFleets[i]);
             }
 
+            if(userFleets[i].stopping) return;
+
             if (userFleets[i].moveTarget !== '') {
                 const targetX = userFleets[i].moveTarget.split(',').length > 1 ? userFleets[i].moveTarget.split(',')[0].trim() : '';
                 const targetY = userFleets[i].moveTarget.split(',').length > 1 ? userFleets[i].moveTarget.split(',')[1].trim() : '';
@@ -5058,6 +5442,7 @@
 
         if (execResp && execResp.name == 'NotEnoughResource') {
 			cLog(1,`${FleetTimeStamp(fleet.label)} ERROR: Not enough fuel`);
+			if(globalSettings.emailNotEnoughFFA) await sendEMail(fleet.label + ' not enough fuel', '');
             fuelResp.detail = 'ERROR: Not enough fuel';
 		} else {
             fuelResp.status = 1;
@@ -5134,6 +5519,7 @@
         let expectedCnt = 0;
         cLog(2,`${FleetTimeStamp(userFleets[i].label)} cargoSpace remaining: ${cargoSpace}`);
 
+		let notEnoughInfo = '';
 		for (const entry of transportManifest) {
 			if (entry.res && entry.amt > 0) {
 				if(cargoSpace < 1) {
@@ -5175,6 +5561,7 @@
 					if (resp && resp.name == 'NotEnoughResource') {
 						const resShort = cargoItems.find(r => r.token == entry.res).name;
 						cLog(1,`${FleetTimeStamp(userFleets[i].label)} Not enough ${resShort}`);
+						notEnoughInfo += 'Not enough ' + resShort + '\n';
 					}
 				}
 			}
@@ -5189,6 +5576,7 @@
         if (startingCargoSpace == cargoSpace && expectedCnt > 0) {
             updateFleetState(userFleets[i], 'ERROR: No cargo loaded');
             cLog(2,`${FleetTimeStamp(userFleets[i].label)} ERROR: No cargo loaded`);
+            if(globalSettings.emailNoCargoLoaded) await sendEMail(userFleets[i].label + ' no cargo loaded', notEnoughInfo);
         }
 		return !userFleets[i].state.includes('ERROR');
 	}
@@ -5223,12 +5611,18 @@
 
 		userFleets[i].lastOp = Date.now();
 
+		if (userFleets[i].stopping || userFleets[i].state.includes('STOPPED')) {
+			userFleets[i].stopping = false;
+			updateFleetState(userFleets[i], 'STOPPED');
+			return;
+		}		
+
 		const moving =
 			userFleets[i].state.includes('Move [') ||
 			userFleets[i].state.includes('Warp [') ||
 			userFleets[i].state.includes('Subwarp [');
 		const waitingForWarpCD = userFleets[i].state.includes('Warp C/D');
-		const scanning = userFleets[i].state.includes('Scan');
+		const scanning = userFleets[i].state.includes('Scan') || userFleets[i].state.includes('scan cooldown');
 		const mining = userFleets[i].mineEnd && userFleets[i].state.includes('Mine') && (Date.now() < userFleets[i].mineEnd);
 		const onTarget = userFleets[i].lastScanCoord == userFleets[i].destCoord;
 		const waitingForScan = userFleets[i].scanEnd && (Date.now() <= userFleets[i].scanEnd);
@@ -5270,6 +5664,8 @@
 					startupScanBlockCheck(i, fleetCoords);
 					const curentSBI = userFleets[i].scanBlockIdx;
 					await handleScan(i, fleetCoords, userFleets[i].scanBlock[curentSBI]);
+
+					if(userFleets[i].stopping) return;
 
 					//Move instantly if a move is needed as the result of the previous scan
 					if(curentSBI !== userFleets[i].scanBlockIdx)	await handleScan(i, fleetCoords, userFleets[i].scanBlock[userFleets[i].scanBlockIdx]);
@@ -5554,113 +5950,118 @@
                 await updateCraft(userCraft);
             }
 
-            let starbasePlayerCargoHoldsAndTokens = await getStarbasePlayerCargoHolds(starbasePlayer);
+            // if the crafting process is still running and there is nothing to complete, we can stop here
+            if((!craftingProcessRunning) || completedCraftingProcesses.length || completedUpgradeProcesses.length)
+            {
 
-            for (let craftingProcess of completedCraftingProcesses) {
-                let craftRecipe = craftRecipes.find(item => item.publicKey.toString() === craftingProcess.recipe.toString());
-                if (userCraft.craftingId && craftingProcess.craftingId == userCraft.craftingId) {
-                    cLog(1,`${FleetTimeStamp(userCraft.label)} Completing craft at [${targetX}, ${targetY}] for  ${craftRecipe.output.mint.toString()}`);
-                    //updateFleetState(userCraft, 'Craft Completing');
-                    updateFleetState(userCraft, 'Completing: ' + craftRecipe.name + (userCraft.item!=craftRecipe.name?' ('+userCraft.item+')':''));
-                    await execCompleteCrafting(starbase, starbasePlayer, starbasePlayerCargoHoldsAndTokens, craftingProcess, userCraft);
-                    if (!userCraft.state.includes('ERROR')) {
-                        if (userCraft.craftingId && craftingProcess.craftingId == userCraft.craftingId) {
-                            updateFleetState(userCraft, 'Idle');
-                            userCraft.craftingId = 0;
-                            await updateCraft(userCraft);
+                let starbasePlayerCargoHoldsAndTokens = await getStarbasePlayerCargoHolds(starbasePlayer);
+
+                for (let craftingProcess of completedCraftingProcesses) {
+                    let craftRecipe = craftRecipes.find(item => item.publicKey.toString() === craftingProcess.recipe.toString());
+                    if (userCraft.craftingId && craftingProcess.craftingId == userCraft.craftingId) {
+                        cLog(1,`${FleetTimeStamp(userCraft.label)} Completing craft at [${targetX}, ${targetY}] for  ${craftRecipe.output.mint.toString()}`);
+                        //updateFleetState(userCraft, 'Craft Completing');
+                        updateFleetState(userCraft, 'Completing: ' + craftRecipe.name + (userCraft.item!=craftRecipe.name?' ('+userCraft.item+')':''));
+                        await execCompleteCrafting(starbase, starbasePlayer, starbasePlayerCargoHoldsAndTokens, craftingProcess, userCraft);
+                        if (!userCraft.state.includes('ERROR')) {
+                            if (userCraft.craftingId && craftingProcess.craftingId == userCraft.craftingId) {
+                                updateFleetState(userCraft, 'Idle');
+                                userCraft.craftingId = 0;
+                                await updateCraft(userCraft);
+                            }
                         }
                     }
                 }
-            }
 
-            for (let upgradeProcess of completedUpgradeProcesses) {
-                let craftingRecipe = upgradeRecipes.find(item => item.publicKey.toString() === upgradeProcess.recipe.toString());
-                if (userCraft.craftingId && upgradeProcess.craftingId == userCraft.craftingId) {
-                    cLog(1,`${FleetTimeStamp(userCraft.label)} Completing upgrade at [${targetX}, ${targetY}] for  ${craftingRecipe.input[0].mint.toString()}`);
-                    updateFleetState(userCraft, 'Upgrade Completing');
-                    await execCompleteUpgrade(starbase, starbasePlayer, starbasePlayerCargoHoldsAndTokens, upgradeProcess, userCraft);
-                    if (!userCraft.state.includes('ERROR')) {
-                        if (userCraft.craftingId && upgradeProcess.craftingId == userCraft.craftingId) {
-                            updateFleetState(userCraft, 'Idle');
-                            userCraft.craftingId = 0;
+                for (let upgradeProcess of completedUpgradeProcesses) {
+                    let craftingRecipe = upgradeRecipes.find(item => item.publicKey.toString() === upgradeProcess.recipe.toString());
+                    if (userCraft.craftingId && upgradeProcess.craftingId == userCraft.craftingId) {
+                        cLog(1,`${FleetTimeStamp(userCraft.label)} Completing upgrade at [${targetX}, ${targetY}] for  ${craftingRecipe.input[0].mint.toString()}`);
+                        updateFleetState(userCraft, 'Upgrade Completing');
+                        await execCompleteUpgrade(starbase, starbasePlayer, starbasePlayerCargoHoldsAndTokens, upgradeProcess, userCraft);
+                        if (!userCraft.state.includes('ERROR')) {
+                            if (userCraft.craftingId && upgradeProcess.craftingId == userCraft.craftingId) {
+                                updateFleetState(userCraft, 'Idle');
+                                userCraft.craftingId = 0;
+                                await updateCraft(userCraft);
+                                //await GM.setValue(userCraft.label, JSON.stringify(userCraft));
+                            }
+                        }
+                    }
+                }
+
+                let starbasePlayerInfo = await sageProgram.account.starbasePlayer.fetch(starbasePlayer);
+                let availableCrew = starbasePlayerInfo.totalCrew - starbasePlayerInfo.busyCrew.toNumber();
+                starbasePlayerCargoHoldsAndTokens = await getStarbasePlayerCargoHolds(starbasePlayer);
+
+                let targetRecipe = getTargetRecipe(starbasePlayerCargoHoldsAndTokens, userCraft, Number(userCraft.amount));
+
+                if (!enableAssistant) return;
+
+                cLog(3, FleetTimeStamp(userCraft.label), 'targetRecipe: ', targetRecipe);
+                cLog(3, FleetTimeStamp(userCraft.label), 'starbasePlayerInfo: ', starbasePlayerInfo);
+                cLog(3, FleetTimeStamp(userCraft.label), 'availableCrew: ', availableCrew);
+                cLog(3, FleetTimeStamp(userCraft.label), 'userCraft: ', userCraft);
+                cLog(3, FleetTimeStamp(userCraft.label), 'userCraft.crew: ', userCraft.crew);
+                cLog(3, FleetTimeStamp(userCraft.label), 'userCraft.state: ', userCraft.state);
+
+                if (availableCrew >= userCraft.crew && targetRecipe && targetRecipe.amountCraftable > 0 && userCraft.state === 'Idle') {
+                    let craftAmount = Math.min(targetRecipe.craftAmount, targetRecipe.amountCraftable);
+                    cLog(1,`${FleetTimeStamp(userCraft.label)} Starting craft at [${targetX}, ${targetY}] for ${craftAmount} ${targetRecipe.craftRecipe.name}`);
+                    //updateFleetState(userCraft, 'Craft Starting');
+                    let activityType = craftRecipes.some(item => item.name === targetRecipe.craftRecipe.name) ? 'Crafting' : 'Upgrading';
+
+                    //Enough Atlas available for the craft?
+                    let enoughAtlas = true;
+                    if(activityType == 'Crafting') {
+                        const atlasNeeded = Number((craftAmount * targetRecipe.craftRecipe.feeAmount).toFixed(10));
+                        const atlasParsedBalance = await solanaReadConnection.getParsedTokenAccountsByOwner(userPublicKey,{ mint: new solanaWeb3.PublicKey('ATLASXmbPQxBUYbxPsV97usA3fPQYEqzQBUHgiFCUsXx')} );
+                        const atlasBalance = (atlasParsedBalance.value[0] ? atlasParsedBalance.value[0].account.data.parsed.info.tokenAmount.uiAmount : 0);
+                        cLog(3, FleetTimeStamp(userCraft.label), 'atlas needed: ', atlasNeeded, ', atlas available: ', atlasBalance);
+                        if(atlasBalance < atlasNeeded) {
+                    	    enoughAtlas = false;
+                        }
+                    }
+                    if(!enoughAtlas) {
+                        updateFleetState(userCraft, 'Not enough Atlas: ' + targetRecipe.craftRecipe.name + (userCraft.item!=targetRecipe.craftRecipe.name?' ('+userCraft.item+')':''));
+                    } else {
+                        let activityInfo = activityType == 'Crafting' ? "Starting: " + targetRecipe.craftRecipe.name + (userCraft.item!=targetRecipe.craftRecipe.name?' ('+userCraft.item+')':'') : 'Upgrade Starting';
+                        updateFleetState(userCraft, activityInfo);
+                        let result = await execStartCrafting(starbase, starbasePlayer, starbasePlayerCargoHoldsAndTokens, targetRecipe.craftRecipe, craftAmount, userCraft);
+                        if (!userCraft.state.includes('ERROR')) {
+                            activityInfo = activityType == 'Crafting' ? "&#9874; " + targetRecipe.craftRecipe.name + (userCraft.item!=targetRecipe.craftRecipe.name?' ('+userCraft.item+')':'') : 'Upgrading';
+                            let craftDuration = (targetRecipe.craftRecipe.duration * craftAmount) / userCraft.crew;
+                            let calcEndTime = TimeToStr(new Date(Date.now() + craftDuration * 1000));
+                            let upgradeTimeStr = upgradeTime.resRemaining > 0 ? calcEndTime : 'Paused';
+                            let craftTimeStr = craftTime.resRemaining > 0 ? calcEndTime : TimeToStr(new Date(Date.now() + ((craftDuration * 1000) / EMPTY_CRAFTING_SPEED_PER_TIER[starbase.account.level])));
+                            let activityTimeStr = activityType == 'Crafting' ? craftTimeStr : upgradeTimeStr;
+                            //updateFleetState(userCraft, activityType + ' [' + activityTimeStr + ']');
+                            updateFleetState(userCraft, activityInfo + ' [' + activityTimeStr + ']');
+                            userCraft.craftingId = result.craftingId;
                             await updateCraft(userCraft);
                             //await GM.setValue(userCraft.label, JSON.stringify(userCraft));
-                        }
+		        }
                     }
-                }
-            }
-
-            let starbasePlayerInfo = await sageProgram.account.starbasePlayer.fetch(starbasePlayer);
-            let availableCrew = starbasePlayerInfo.totalCrew - starbasePlayerInfo.busyCrew.toNumber();
-            starbasePlayerCargoHoldsAndTokens = await getStarbasePlayerCargoHolds(starbasePlayer);
-
-            let targetRecipe = getTargetRecipe(starbasePlayerCargoHoldsAndTokens, userCraft, Number(userCraft.amount));
-
-            if (!enableAssistant) return;
-
-            cLog(3, FleetTimeStamp(userCraft.label), 'targetRecipe: ', targetRecipe);
-            cLog(3, FleetTimeStamp(userCraft.label), 'starbasePlayerInfo: ', starbasePlayerInfo);
-            cLog(3, FleetTimeStamp(userCraft.label), 'availableCrew: ', availableCrew);
-            cLog(3, FleetTimeStamp(userCraft.label), 'userCraft: ', userCraft);
-            cLog(3, FleetTimeStamp(userCraft.label), 'userCraft.crew: ', userCraft.crew);
-            cLog(3, FleetTimeStamp(userCraft.label), 'userCraft.state: ', userCraft.state);
-
-            if (availableCrew >= userCraft.crew && targetRecipe && targetRecipe.amountCraftable > 0 && userCraft.state === 'Idle') {
-                let craftAmount = Math.min(targetRecipe.craftAmount, targetRecipe.amountCraftable);
-                cLog(1,`${FleetTimeStamp(userCraft.label)} Starting craft at [${targetX}, ${targetY}] for ${craftAmount} ${targetRecipe.craftRecipe.name}`);
-                //updateFleetState(userCraft, 'Craft Starting');
-                let activityType = craftRecipes.some(item => item.name === targetRecipe.craftRecipe.name) ? 'Crafting' : 'Upgrading';
-
-                //Enough Atlas available for the craft?
-                let enoughAtlas = true;
-                if(activityType == 'Crafting') {
-                    const atlasNeeded = Number((craftAmount * targetRecipe.craftRecipe.feeAmount).toFixed(10));
-                    const atlasParsedBalance = await solanaReadConnection.getParsedTokenAccountsByOwner(userPublicKey,{ mint: new solanaWeb3.PublicKey('ATLASXmbPQxBUYbxPsV97usA3fPQYEqzQBUHgiFCUsXx')} );
-                    const atlasBalance = atlasParsedBalance.value[0].account.data.parsed.info.tokenAmount.uiAmount;
-                    cLog(3, FleetTimeStamp(userCraft.label), 'atlas needed: ', atlasNeeded, ', atlas available: ', atlasBalance);
-                    if(atlasBalance < atlasNeeded) {
-                    	enoughAtlas = false;
+                } else if (userCraft.state === 'Idle') {
+                    //updateFleetState(userCraft, 'Waiting for crew/material');
+                    let materialStr = '';
+                    if(targetRecipe === null) {
+                        materialStr = ': ' + userCraft.item;
+                    } else {
+                        materialStr = ': ' + targetRecipe.craftRecipe.name + (userCraft.item != targetRecipe.craftRecipe.name ? ' (' + userCraft.item + ')' : '' );
                     }
+                    if(availableCrew < userCraft.crew && ((targetRecipe && targetRecipe.amountCraftable <= 0) || (!targetRecipe)) ) {
+                        updateFleetState(userCraft, 'Waiting for crew/material' + materialStr);
+                    }
+                    else if(availableCrew < userCraft.crew) {
+                        updateFleetState(userCraft, 'Waiting for crew' + materialStr);
+                    }
+                    else {
+                        updateFleetState(userCraft, 'Waiting for material' + materialStr);
+                    }
+                    await updateCraft(userCraft);
                 }
-                if(!enoughAtlas) {
-                    updateFleetState(userCraft, 'Not enough Atlas: ' + targetRecipe.craftRecipe.name + (userCraft.item!=targetRecipe.craftRecipe.name?' ('+userCraft.item+')':''));
-                } else {
-                    let activityInfo = activityType == 'Crafting' ? "Starting: " + targetRecipe.craftRecipe.name + (userCraft.item!=targetRecipe.craftRecipe.name?' ('+userCraft.item+')':'') : 'Upgrade Starting';
-                    updateFleetState(userCraft, activityInfo);
-                    let result = await execStartCrafting(starbase, starbasePlayer, starbasePlayerCargoHoldsAndTokens, targetRecipe.craftRecipe, craftAmount, userCraft);
-                    if (!userCraft.state.includes('ERROR')) {
-                        activityInfo = activityType == 'Crafting' ? "&#9874; " + targetRecipe.craftRecipe.name + (userCraft.item!=targetRecipe.craftRecipe.name?' ('+userCraft.item+')':'') : 'Upgrading';
-                        let craftDuration = (targetRecipe.craftRecipe.duration * craftAmount) / userCraft.crew;
-                        let calcEndTime = TimeToStr(new Date(Date.now() + craftDuration * 1000));
-                        let upgradeTimeStr = upgradeTime.resRemaining > 0 ? calcEndTime : 'Paused';
-                        let craftTimeStr = craftTime.resRemaining > 0 ? calcEndTime : TimeToStr(new Date(Date.now() + ((craftDuration * 1000) / EMPTY_CRAFTING_SPEED_PER_TIER[starbase.account.level])));
-                        let activityTimeStr = activityType == 'Crafting' ? craftTimeStr : upgradeTimeStr;
-                        //updateFleetState(userCraft, activityType + ' [' + activityTimeStr + ']');
-                        updateFleetState(userCraft, activityInfo + ' [' + activityTimeStr + ']');
-                        userCraft.craftingId = result.craftingId;
-                        await updateCraft(userCraft);
-                        //await GM.setValue(userCraft.label, JSON.stringify(userCraft));
-		    }
-                }
-            } else if (userCraft.state === 'Idle') {
-                //updateFleetState(userCraft, 'Waiting for crew/material');
-                let materialStr = '';
-                if(targetRecipe === null) {
-                    materialStr = ': ' + userCraft.item;
-                } else {
-                    materialStr = ': ' + targetRecipe.craftRecipe.name + (userCraft.item != targetRecipe.craftRecipe.name ? ' (' + userCraft.item + ')' : '' );
-                }
-                if(availableCrew < userCraft.crew && ((targetRecipe && targetRecipe.amountCraftable <= 0) || (!targetRecipe)) ) {
-                    updateFleetState(userCraft, 'Waiting for crew/material' + materialStr);
-                }
-                else if(availableCrew < userCraft.crew) {
-                    updateFleetState(userCraft, 'Waiting for crew' + materialStr);
-                }
-                else {
-                    updateFleetState(userCraft, 'Waiting for material' + materialStr);
-                }
-                await updateCraft(userCraft);
-            }
+	    }
         }
         catch(error) {
             cLog(1,`${FleetTimeStamp(userCraft.label)} Uncaught crafting error`, error);
@@ -5685,7 +6086,13 @@
         for (let i=1; i < globalSettings.craftingJobs+1; i++) {
             let craftSavedData = await GM.getValue('craft' + i, '{}');
             let craftParsedData = JSON.parse(craftSavedData);
-            if (craftParsedData.item && craftParsedData.coordinates) startCraft(craftParsedData);
+            //if (craftParsedData.item && craftParsedData.coordinates) startCraft(craftParsedData);
+            
+            //Stagger craft starts by 2s to avoid overloading the RPC            
+            if (craftParsedData.item && craftParsedData.coordinates) {
+		    updateFleetState(craftParsedData, craftParsedData.state);
+		    setTimeout(() => { startCraft(craftParsedData); }, 2000 * i);
+	    }
         }
 
 		setTimeout(fleetHealthCheck, 5000);
@@ -5699,7 +6106,7 @@
 			cLog(1, 'Checking SOL and Atlas balance');
 			const solBalance = await solanaReadConnection.getBalance(userPublicKey);
 			const atlasBalance = await solanaReadConnection.getParsedTokenAccountsByOwner(userPublicKey,{ mint: new solanaWeb3.PublicKey('ATLASXmbPQxBUYbxPsV97usA3fPQYEqzQBUHgiFCUsXx')} );
-			document.getElementById('assist-modal-balance').innerHTML='SOL:'+((solBalance/1000000000).toFixed(3))+' Atlas:'+parseInt(atlasBalance.value[0].account.data.parsed.info.tokenAmount.uiAmount);
+			document.getElementById('assist-modal-balance').innerHTML='SOL:'+((solBalance/1000000000).toFixed(3))+' Atlas:'+(atlasBalance.value[0] ? parseInt(atlasBalance.value[0].account.data.parsed.info.tokenAmount.uiAmount) : 0);
 		}
 		tokenCheckCounter++;
 
@@ -5752,20 +6159,35 @@
 		if(enableAssistant)	setTimeout(fleetHealthCheck, 10000);
 	}
 
+    let globalWaitForStopSequence = false;
     async function toggleAssistant(newState=null) {
         let autoSpanRef = document.querySelector('#autoScanBtn > span');
-        if (enableAssistant === true) {
+	// Race condition prevented: user presses STOP, waitForSequence is done, enableAssistant is false, but SLYA still executes dock->load/unload->undock sequences, then an error occurs which hits the error threshold and SLYA switches to ERROR state, which would call toogleAssistant. But enableAssistant is false in this moment, which would enable SLYA again. So we need to make sure that an error state always stops SLYA. 
+	// Also we set enableAssistant to FALSE before the loop, so SLYA stops immediately (which is better/faster when you have a lot of fleets, because otherwise: as long as at least 1 fleet is in a special state, enableAssistant would never be switched to FALSE).
+	// To prevent that the user enables SLYA again while SLYA waits for the stop sequence, we make an additional global variable.
+	// And we ignore the start/stop button as long as the init sequence isn't done yet.
+	// Added Docking and Undocking to the wait sequence, so a fleet finishes the docking->load/unload->undock loop first (and doesn't get interrupted in between).
+        if((!initComplete) || ((!newState) && globalWaitForStopSequence)) return;
+        if (enableAssistant === true || newState) {
+            globalWaitForStopSequence = true;
             let waitForSequence = true;
             autoSpanRef.innerHTML = 'Wait...';
+            enableAssistant = false;
             while (waitForSequence) {
                 let fleetBusy = false;
                 for (let i=0, n=userFleets.length; i < n; i++) {
-                    if (['Mine Starting','Mining Stop','Unloading','Loading','Refueling','Craft Completing','Upgrade Completing'].includes(userFleets[i].state)) fleetBusy = true;
+                    //if (['Mine Starting','Mining Stop','Unloading','Loading','Refueling','Craft Completing','Upgrade Completing'].includes(userFleets[i].state)) fleetBusy = true;
+                    if(['Mine Starting','Mining Stop','Unloading','Loading','Docking','Undocking','Refueling'].some(v => userFleets[i].state.startsWith(v))) fleetBusy = true;
                 }
+		for (let i=1; i < globalSettings.craftingJobs+1; i++) {
+			let craftSavedData = await GM.getValue('craft' + i, '{}');
+			let craftParsedData = JSON.parse(craftSavedData);
+			if(['Starting:','Upgrade Starting', 'Completing:', 'Upgrade Completing'].some(v => craftParsedData.state.startsWith(v))) fleetBusy = true;
+		}
                 if (!fleetBusy) waitForSequence = false;
                 await wait(5000);
             }
-            enableAssistant = false;
+            globalWaitForStopSequence = false;
             autoSpanRef.innerHTML = newState ? newState : 'Start';
         } else {
             enableAssistant = true;
@@ -5780,6 +6202,112 @@
             }
         }
     }
+
+    async function sendEMail(subject, text, overrideURL) {
+		let message = '';
+		if((overrideURL ? overrideURL : globalSettings.emailInterface).length > 0) {
+			try {
+				cLog(1, 'Sending a message via the email interface, subject: ', subject);
+				const response = await fetch((overrideURL ? overrideURL : globalSettings.emailInterface), {
+					method: "POST",
+					body: JSON.stringify({
+						subject: 'SLYA: ' + subject,
+						text: text
+					}),
+					headers: {
+						"Content-type": "application/json; charset=UTF-8"
+					}
+				});
+				if (!response.ok) {
+					message = 'Error while sending a request to the email interface: ' + response.status + ' ' + response.statusText;					
+				} else {
+					const result = await response.json();
+					if(!result.success) {
+						message = 'Error from email interface: ' + result.text;
+					} else {
+						message = 'The email was sent';
+					}
+				}
+			} catch(error) {
+				message = 'Error while sending a request to the email interface: ' + error.message;
+			}
+			cLog(1, message);
+		}
+		return message;
+    }
+
+    async function emailInterfaceTest() {
+		let emailInterfaceURL = document.querySelector('#emailInterface');
+		let url = emailInterfaceURL.value;
+		
+		const result = await sendEMail('Interface-Test', 'Congratulations! Your email interface is working.', url);
+		let emailInterfaceTestResult = document.querySelector('#emailInterfaceTestResult');
+		emailInterfaceTestResult.innerHTML = result;
+		
+    }
+
+
+    async function getAllStarbasesForFaction(faction) {
+        return new Promise(async resolve => {
+
+			cLog(1, 'Reading faction starbases');
+			let starbases = await sageProgram.account.starbase.all([
+				{
+					memcmp: {
+						offset: 201,
+						bytes: [faction]
+					}
+				}
+			]);
+			cLog(1, starbases.length, 'read');			
+
+			cLog(1, 'Reading all planets');
+			let planets = await sageProgram.account.planet.all([]);
+			cLog(1, planets.length, 'read');			
+			
+			// first we group all planets of the same sector:
+			let planetSectors = [];
+			planets.forEach((planet) => {
+				let label = (new TextDecoder("utf-8").decode(new Uint8Array(planet.account.name))).replace(/\0/g, '');
+				let x=planet.account.sector[0].toNumber();
+				let y=planet.account.sector[1].toNumber();
+				if(typeof planetSectors[x] == 'undefined') {
+					planetSectors[x] = [];
+				}
+				if(typeof planetSectors[x][y] == 'undefined') {
+					planetSectors[x][y] = [];
+				}
+				planetSectors[x][y].push(planet);					
+			});
+
+			// now we find out the system names by looking at the planet names
+			let validMainTargets = [];
+			let validMRZTargets = [];
+			starbases.forEach((starbase) => {
+				let x=starbase.account.sector[0].toNumber();
+				let y=starbase.account.sector[1].toNumber();
+				let planets=planetSectors[x][y];
+				let name = (new TextDecoder("utf-8").decode(new Uint8Array(planets[0].account.name))).replace(/\0/g, '').split('-');
+				let systemName = name[0] + '-' + name[1];
+				if(name[0] == 'MRZ') {
+					validMRZTargets.push({x, y, name: systemName});
+				} else {
+					validMainTargets.push({x, y, name: systemName});
+				}
+				planetData.push({coords: [x,y], lastUpdated: Date.now(), planets: planets});
+				starbaseData.push({coords: [x,y], lastUpdated: Date.now(), starbase: starbase});
+			});
+			validMainTargets.sort((a, b) => { if (a.name < b.name) { return -1; } if (a.name > b.name) { return 1; } return 0; });
+			//validMainTargets[0].name = (validMainTargets[0].name.includes('-1') ? validMainTargets[0].name.replace('-1','-CSS') : validMainTargets[0].name);
+			validMRZTargets.sort((a, b) => { if (a.name < b.name) { return -1; } if (a.name > b.name) { return 1; } return 0; });
+			validTargets = validMainTargets.concat(validMRZTargets);
+							
+			console.log('validTargets:',validTargets);
+							
+            resolve();
+        });
+    }
+
 
 	function initUser() {
 		return new Promise(async resolve => {
@@ -5894,6 +6422,8 @@
 							},
 					},
 			]);
+
+            await getAllStarbasesForFaction(userProfileFactionAcct.account.faction);
 
             let redemptionConfigs = await pointsStoreProgram.account.redemptionConfig.all();
             userRedemptionConfigAcct = redemptionConfigs.find(item => item.account.faction === userProfileFactionAcct.account.faction).publicKey;
@@ -6082,9 +6612,13 @@
 			observer && observer.disconnect();
 			let assistCSS = document.createElement('style');
 			const statusPanelOpacity = globalSettings.statusPanelOpacity / 100;
-			assistCSS.innerHTML = `.assist-modal {display: none; position: fixed; z-index: 2; padding-top: 100px; left: 0; top: 0; width: 100%; height: 100%; overflow: auto; background-color: rgba(0,0,0,0.4);} .assist-modal-content {position: relative; display: flex; flex-direction: column; background-color: rgb(41, 41, 48); margin: auto; padding: 0; border: 1px solid #888; width: 785px; min-width: 450px; max-width: 75%; height: auto; min-height: 50px; max-height: 85%; overflow-y: auto; box-shadow: 0 4px 8px 0 rgba(0,0,0,0.2),0 6px 20px 0 rgba(0,0,0,0.19); -webkit-animation-name: animatetop; -webkit-animation-duration: 0.4s; animation-name: animatetop; animation-duration: 0.4s;} #assist-modal-error {color: red; margin-left: 5px; margin-right: 5px; font-size: 16px;} .assist-modal-header-right {color: rgb(255, 190, 77); margin-left: auto !important; font-size: 20px;} .assist-btn {background-color: rgb(41, 41, 48); color: rgb(255, 190, 77); margin-left: 2px; margin-right: 2px;} .assist-btn:hover {background-color: rgba(255, 190, 77, 0.2);} .assist-modal-close:hover, .assist-modal-close:focus {font-weight: bold; text-decoration: none; cursor: pointer;} .assist-modal-btn {color: rgb(255, 190, 77); padding: 5px 5px; margin-right: 5px; text-decoration: none; background-color: rgb(41, 41, 48); border: none; cursor: pointer;} .assist-modal-save:hover { background-color: rgba(255, 190, 77, 0.2); } .assist-modal-header {display: flex; align-items: center; padding: 2px 16px; background-color: rgba(255, 190, 77, 0.2); border-bottom: 2px solid rgb(255, 190, 77); color: rgb(255, 190, 77);} .assist-modal-body {padding: 2px 16px; font-size: 12px;} .assist-modal-body > table {width: 100%;border-collapse: collapse;} .assist-modal-body th, .assist-modal-body td {padding:0 7px 0 0; line-height:136%;} #assistStatus {background-color: rgba(0,0,0,${statusPanelOpacity}); opacity: ${statusPanelOpacity}; backdrop-filter: blur(10px); position: absolute; top: 80px; right: 20px; z-index: 1;} #assistStarbaseStatus {background-color: rgba(0,0,0,${statusPanelOpacity}); opacity: ${statusPanelOpacity}; backdrop-filter: blur(10px); position: absolute; top: 80px; right: 20px; z-index: 1;} #assistCheck {background-color: rgba(0,0,0,0.75); backdrop-filter: blur(10px); position: absolute; margin: auto; left: 0; right: 0; top: 100px; width: 650px; min-width: 450px; max-width: 75%; z-index: 1;} .dropdown { position: absolute; display: none; margin-top: 25px; margin-left: 152px; background-color: rgb(41, 41, 48); min-width: 120px; box-shadow: 0 8px 16px 0 rgba(0, 0, 0, 0.2); z-index: 2; } .dropdown.show { display: block; } .assist-btn-alt { color: rgb(255, 190, 77); padding: 12px 16px; text-decoration: none; display: block; background-color: rgb(41, 41, 48); border: none; cursor: pointer; } .assist-btn-alt:hover { background-color: rgba(255, 190, 77, 0.2); } #checkresults { padding: 5px; margin-top: 20px; border: 1px solid grey; border-radius: 8px;} .dropdown button {width: 100%; text-align: left;} #assistModal table {border-collapse: collapse;} .assist-scan-row, .assist-mine-row, .assist-transport-row {background-color: rgba(255, 190, 77, 0.1); border-left: 1px solid white; border-right: 1px solid white; border-bottom: 1px solid white} .show-top-border {background-color: rgba(255, 190, 77, 0.1); border-left: 1px solid white; border-right: 1px solid white; border-top: 1px solid white;}`;
-			assistCSS.innerHTML += ` #assistStats {background-color: rgba(0,0,0,${statusPanelOpacity}); opacity: ${statusPanelOpacity}; backdrop-filter: blur(10px); position: absolute; top: 80px; right: 20px; z-index: 1; } #assistStats table { border-collapse: collapse; border-spacing:1px; } #assistStats td, #assistStats th { padding:0 7px 0 0; }`; // statsadd
-			assistCSS.innerHTML +=  `#autoFeeData { display:none; } #automaticFee:checked ~ #autoFeeData { display:block; }`;
+			let assistCSSString = `.assist-modal {display: none; position: fixed; z-index: 2; padding-top: 100px; left: 0; top: 0; width: 100%; height: 100%; overflow: auto; background-color: rgba(0,0,0,0.4);} .assist-modal-content {position: relative; display: flex; flex-direction: column; background-color: rgb(41, 41, 48); margin: auto; padding: 0; border: 1px solid #888; width: 785px; min-width: 450px; max-width: 75%; height: auto; min-height: 50px; max-height: 85%; overflow-y: auto; box-shadow: 0 4px 8px 0 rgba(0,0,0,0.2),0 6px 20px 0 rgba(0,0,0,0.19); -webkit-animation-name: animatetop; -webkit-animation-duration: 0.4s; animation-name: animatetop; animation-duration: 0.4s;} #assist-modal-error {color: red; margin-left: 5px; margin-right: 5px; font-size: 16px;} .assist-modal-header-right {color: rgb(255, 190, 77); margin-left: auto !important; font-size: 20px;} .assist-btn {background-color: rgb(41, 41, 48); color: rgb(255, 190, 77); margin-left: 2px; margin-right: 2px;} .assist-btn:hover {background-color: rgba(255, 190, 77, 0.2);} .assist-modal-close:hover, .assist-modal-close:focus {font-weight: bold; text-decoration: none; cursor: pointer;} .assist-modal-btn {color: rgb(255, 190, 77); padding: 5px 5px; margin-right: 5px; text-decoration: none; background-color: rgb(41, 41, 48); border: none; cursor: pointer;} .assist-modal-save:hover { background-color: rgba(255, 190, 77, 0.2); } .assist-modal-header {display: flex; align-items: center; padding: 2px 16px; background-color: rgba(255, 190, 77, 0.2); border-bottom: 2px solid rgb(255, 190, 77); color: rgb(255, 190, 77);} .assist-modal-body {padding: 2px 16px; font-size: 12px;} .assist-modal-body > table, .assist-modal-body table.main table {width: 100%;border-collapse: collapse;} .assist-modal-body th, .assist-modal-body td {padding:0 7px 0 0; line-height:136%;} #assistStatus {background-color: rgba(0,0,0,${statusPanelOpacity}); opacity: ${statusPanelOpacity}; backdrop-filter: blur(10px); position: absolute; top: 80px; right: 20px; z-index: 1;} #assistStarbaseStatus {background-color: rgba(0,0,0,${statusPanelOpacity}); opacity: ${statusPanelOpacity}; backdrop-filter: blur(10px); position: absolute; top: 80px; right: 20px; z-index: 1;} #assistCheck {background-color: rgba(0,0,0,0.75); backdrop-filter: blur(10px); position: absolute; margin: auto; left: 0; right: 0; top: 100px; width: 650px; min-width: 450px; max-width: 75%; z-index: 1;} .dropdown { position: absolute; display: none; margin-top: 25px; margin-left: 152px; background-color: rgb(41, 41, 48); min-width: 120px; box-shadow: 0 8px 16px 0 rgba(0, 0, 0, 0.2); z-index: 2; } .dropdown.show { display: block; } .assist-btn-alt { color: rgb(255, 190, 77); padding: 12px 16px; text-decoration: none; display: block; background-color: rgb(41, 41, 48); border: none; cursor: pointer; } .assist-btn-alt:hover { background-color: rgba(255, 190, 77, 0.2); } #checkresults { padding: 5px; margin-top: 20px; border: 1px solid grey; border-radius: 8px;} .dropdown button {width: 100%; text-align: left;} #assistModal table {border-collapse: collapse;} .assist-scan-row, .assist-mine-row, .assist-transport-row {background-color: rgba(255, 190, 77, 0.1); border-left: 1px solid white; border-right: 1px solid white; border-bottom: 1px solid white} .show-top-border {background-color: rgba(255, 190, 77, 0.1); border-left: 1px solid white; border-right: 1px solid white; border-top: 1px solid white;}`;
+			assistCSSString += ` #assistStats {background-color: rgba(0,0,0,${statusPanelOpacity}); opacity: ${statusPanelOpacity}; backdrop-filter: blur(10px); position: absolute; top: 80px; right: 20px; z-index: 1; } #assistStats table { border-collapse: collapse; border-spacing:1px; } #assistStats td, #assistStats th { padding:0 7px 0 0; }`; // statsadd
+			assistCSSString += ` #autoFeeData { display:none; } #automaticFee:checked ~ #autoFeeData { display:block; }`;
+			assistCSSString += ` #settingsModal nav label { width:100px; display:block; padding: 15px 15px; border-top: 1px solid silver; border-right: 1px solid silver; background-color: #888; color: #ddd; } #settingsModal nav label:nth-child(1) { border-left: 1px solid silver; } #settingsModal .tabbed > input, #settingsModal .tabbed menu li { display: none;} #settingsModal nav label:hover { background: hsl(210,50%,40%); } #settingsModal nav label:active { background: #ffffff; } #settingsModal .tabbed menu>li { padding: 20px; width: 100%; border: 1px solid silver; background-color: #f4f4f4; line-height: 1.5em; letter-spacing: 0.3px; color: #444; } #settingsModal .tabbed menu { padding-left:100px } #settingsModal nav { float:left } #settingsModal .tabbed menu li div { margin-bottom: 10px; } #settingsModal .tabbed menu li small { display:block; line-height:130%; } `;
+			assistCSSString += ` #settingsModal #tab_general:checked ~ menu .tab_general, #settingsModal #tab_fees:checked ~ menu .tab_fees, #settingsModal #tab_crafting:checked ~ menu .tab_crafting, #settingsModal #tab_scanning:checked ~ menu .tab_scanning, #settingsModal #tab_fleets:checked ~ menu .tab_fleets, #settingsModal #tab_advanced:checked ~ menu .tab_advanced { display: block; }`;
+			assistCSSString += ` #settingsModal #tab_general:checked ~ nav label[for="tab_general"], #settingsModal #tab_fees:checked ~ nav label[for="tab_fees"], #settingsModal #tab_crafting:checked ~ nav label[for="tab_crafting"], #settingsModal #tab_scanning:checked ~ nav label[for="tab_scanning"], #settingsModal #tab_fleets:checked ~ nav label[for="tab_fleets"], #settingsModal #tab_advanced:checked ~ nav label[for="tab_advanced"] { background: #fc0; color: #111; position: relative; border-bottom: none; }`;
+			assistCSS.innerHTML = assistCSSString;
 
 			let assistModal = document.createElement('div');
 			assistModal.classList.add('assist-modal');
@@ -6102,7 +6636,67 @@
 			settingsModal.style.display = 'none';
 			let settingsModalContent = document.createElement('div');
 			settingsModalContent.classList.add('assist-modal-content');
-			settingsModalContent.innerHTML = '<div class="assist-modal-header"> <img src="' + iconStr + '" /> <span style="padding-left: 15px;">SLY Assistant v' + GM_info.script.version + '</span> <div class="assist-modal-header-right"> <button class=" assist-modal-btn assist-modal-save">Save</button> <span class="assist-modal-close">x</span> </div></div><div class="assist-modal-body"> <span id="settings-modal-error"></span> <div id="settings-modal-header">Global Settings</div> <div>Priority Fee <input id="priorityFee" type="number" min="0" max="100000000" placeholder="1" ></input> <span>Added to each transaction. Set to 0 (zero) to disable (the wallet will then decide the fee!). 1 Lamport = 0.000000001 SOL. Normal transactions will use the full priority fee, smaller transactions will use 10%. Exception: craft transactions are super heavy and will use 250% of the fee.</span> </div> <div>Auto-Fee? <input id="automaticFee" type="checkbox"></input> <span>Enable the auto fee algorithm, works best if at least 1 tx is executed per minute.</span><fieldset id="autoFeeData">FeeMin: <input id="automaticFeeMin" type="number" min="0" max="100000" placeholder="1" size="6"></input> TimeMin: <input id="automaticFeeTimeMin" type="number" min="1" max="120" placeholder="6" size="3"></input><br/>FeeMax: <input id="automaticFeeMax" type="number" min="0" max="100000" placeholder="12000" size="6"></input> TimeMax: <input id="automaticFeeTimeMax" type="number" min="5" max="120" placeholder="40" size="3"></input><br/>Max fee change/tx: <input id="automaticFeeStep" type="number" min="1" max="1000" placeholder="80" size="6"></input><br/><span>Fee starts with the configured priority fee from above. The current fee is then somewhere between FeeMin and FeeMax. This is 1:1 carried over to TimeMin and TimeMax and results in a threshold time. If a new tx is below this time, the fee gets decreased. If a new tx is above this time, the fee gets increased. Both times the amount is limited to "Max fee change/tx". The more the time deviates from the current threshold time, the greater the change.</span></fieldset></div> <div>Save profile selection? <input id="saveProfile" type="checkbox"></input> <span>Should the profile selection be saved (uncheck to select a different profile each time)?</span> </div> <div>Tx Poll Delay <input id="confirmationCheckingDelay" type="number" min="200" max="10000" placeholder="200"></input> <span>How many milliseconds to wait before re-reading the chain for confirmation</span> </div> <div>Console Logging <input id="debugLogLevel" type="number" min="0" max="9" placeholder="3"></input> <span>How much console logging you want to see (higher number = more, 0 = none)</span> </div> <div>Crafting Jobs <input id="craftingJobs" type="number" min="0" max="100" placeholder="4"></input> <span>How many crafting jobs should be enabled?</span> </div> <div>Subwarp for short distances? <input id="subwarpShortDist" type="checkbox"></input> <span>Should fleets subwarp when travel distance is 1 diagonal square or less?</span> </div> <div>Use Ammo Banks for Transport? <input id="transportUseAmmoBank" type="checkbox"></input> <span>Should transports also use their ammo banks to help move ammo?</span> </div> <div>Stop Transports On Error <input id="transportStopOnError" type="checkbox"></input> <span>Should transport fleet stop completely if there is an error (example: not enough resource/fuel/etc.)?</span> </div> <div>Fuel to 100% for transports <input id="transportFuel100" type="checkbox"></input> <span>If a refuel is needed at the source, should transport fleets fill fuel to 100%?</span> </div> <div>Transports keep 1 resource <input id="transportKeep1" type="checkbox"></input> <span>If unloading a resource, should transport fleets keep 1 resource to save a CreatePDA transaction when loading it again?</span> </div> <div>Miners keep 1 resource <input id="minerKeep1" type="checkbox"></input> <span>Same as previous option but for miners. Also load 1 food more, so the food token account is not closed, too.</span> </div> <div>Starbases keep 1 resource <input id="starbaseKeep1" type="checkbox"></input> <span>Same as previous option but for starbases.</span> </div> <div>Moving Scan Pattern <select id="scanBlockPattern"> <option value="square">square</option> <option value="ring">ring</option> <option value="spiral">spiral</option> <option value="up">up</option> <option value="down">down</option> <option value="left">left</option> <option value="right">right</option> <option value="sly">sly</option> </select> <span>Only applies to fleets set to Move While Scanning</span> </div> <div>Scan Block Length <input id="scanBlockLength" type="number" min="2" max="50" placeholder="5"></input> <span>How far fleets should go for the up, down, left and right scanning patterns</span> </div> <div>Scan Block Resets After Resupply? <input id="scanBlockResetAfterResupply" type="checkbox"></input> <span>Start from the beginning of the pattern after resupplying at starbase?</span> </div> <div>Scan Resupply On Low Fuel? <input id="scanResupplyOnLowFuel" type="checkbox"></input> <span>Do scanning fleets set to Move While Scanning return to base to resupply when fuel is too low to move?</span> </div> <div>Scan Sector Regeneration Delay <input id="scanSectorRegenTime" type="number" min="0" placeholder="90"></input> <span>Number of seconds to wait after finding SDU</span> </div> <div>Scan Pause Time <input id="scanPauseTime" type="number" min="240" max="6000" placeholder="600"></input> <span>Number of seconds to wait when sectors probabilities are too low</span> </div> <div>Scan Strike Count <input id="scanStrikeCount" type="number" min="1" max="10" placeholder="3"></input> <span>Number of low % scans before moving on or pausing</span> </div> <div>Status Panel Opacity <input id="statusPanelOpacity" type="range" min="1" max="100" value="75"></input> <span>(requires page refresh)</span> </div> <div>---</div> <div>Advanced Settings</div> <div>Auto Start Script <input id="autoStartScript" type="checkbox"></input> <span>Should Lab Assistant automatically start after initialization is complete?</span> </div> <div>Reload On Stuck Fleets <input id="reloadPageOnFailedFleets" type="number" min="0" max="999" placeholder="0"></input> <span>Automatically refresh the page if this many fleets get stuck (0 = never)</span> </div><div>Exclude fleets:<br><textarea id="excludeFleets" cols="40" rows="6"></textarea><br><span>(one fleet name per line, case sensivity, reload required)</span> </div></div>';
+			let settingsModalContentString = '<div class="assist-modal-header"> <img src="' + iconStr + '" /> <span style="padding-left: 15px;">SLY Assistant v' + GM_info.script.version + '</span> <div class="assist-modal-header-right"> <button class=" assist-modal-btn assist-modal-save">Save</button> <span class="assist-modal-close">x</span> </div></div><div class="assist-modal-body"> <span id="settings-modal-error"></span> ';
+			settingsModalContentString += '<div class="tabbed">';
+			settingsModalContentString += '<input checked="checked" id="tab_general" type="radio" name="tabs">';
+			settingsModalContentString += '<input id="tab_fees" type="radio" name="tabs">';
+			settingsModalContentString += '<input id="tab_scanning" type="radio" name="tabs">';
+			settingsModalContentString += '<input id="tab_fleets" type="radio" name="tabs">';
+			settingsModalContentString += '<input id="tab_advanced" type="radio" name="tabs">';
+			settingsModalContentString += '<nav>';
+			settingsModalContentString += '<label for="tab_general">General</label>';
+			settingsModalContentString += '<label for="tab_fees">Fees</label>';
+			settingsModalContentString += '<label for="tab_scanning">Scanning</label>';
+			settingsModalContentString += '<label for="tab_fleets">Fleets/RSS</label>';
+			settingsModalContentString += '<label for="tab_advanced">Advanced</label>';
+			settingsModalContentString += '</nav>';
+			settingsModalContentString += '<menu>';
+			settingsModalContentString += '<li class="tab_general">';
+			settingsModalContentString += '<div>Crafting Jobs <input id="craftingJobs" type="number" min="0" max="100" placeholder="4"></input><br><small>How many crafting jobs should be enabled?</small></div>';
+			settingsModalContentString += '<div>Save profile selection? <input id="saveProfile" type="checkbox"></input><br><small>Should the profile selection be saved (uncheck to select a different profile each time)?</small></div>';
+			settingsModalContentString += '<div>Status Panel Opacity <input id="statusPanelOpacity" type="range" min="1" max="100" value="75"></input><br><small>(requires page refresh)</small></div>';
+			settingsModalContentString += '<div>Fleets per Column <input id="fleetsPerColumn" type="number" min="0" max="100" placeholder="0"></input><br><small>How many fleets should be displayed per column (0 = all fleets in one column)</small></div>';
+			settingsModalContentString += '</li>';
+			settingsModalContentString += '<li class="tab_fees">';
+			settingsModalContentString += '<div>Priority Fee <input id="priorityFee" type="number" min="0" max="100000000" placeholder="1" ></input><br><small>Added to each transaction. Set to 0 (zero) to disable (the wallet will then decide the fee!). 1 Lamport = 0.000000001 SOL. Normal transactions will use the full priority fee, smaller transactions will use 10%. Exception: craft transactions are heavy and will use the configured multiplier below.</small> </div>';
+			settingsModalContentString += '<div>Fee multiplier for crafting transactions <input id="craftingTxMultiplier" type="number" min="10" max="500" placeholder="200" ></input>%<br><small>How much of the current fee should be used for crafting transactions? (max: 500%)</small> </div>';
+			settingsModalContentString += '<div>Auto-Fee? <input id="automaticFee" type="checkbox"></input> <span>Enable the auto fee algorithm, works best if at least 1 tx is executed per minute.</span><fieldset id="autoFeeData">FeeMin: <input id="automaticFeeMin" type="number" min="0" max="100000" placeholder="1" size="6"></input> TimeMin: <input id="automaticFeeTimeMin" type="number" min="1" max="120" placeholder="10" size="3"></input><br/>FeeMax: <input id="automaticFeeMax" type="number" min="0" max="100000" placeholder="10000" size="6"></input> TimeMax: <input id="automaticFeeTimeMax" type="number" min="5" max="120" placeholder="70" size="3"></input><br/>Max fee change/tx: <input id="automaticFeeStep" type="number" min="1" max="1000" placeholder="80" size="6"></input><br/>Crafting transactions are included when calculating the auto fee. <input id="craftingTxAffectsAutoFee" type="checkbox"></input><br><small>Fee starts with the configured priority fee from above. The current fee is then somewhere between FeeMin and FeeMax. This is 1:1 carried over to TimeMin and TimeMax and results in a threshold time. If a new tx is below this time, the fee gets decreased. If a new tx is above this time, the fee gets increased. Both times the amount is limited to "Max fee change/tx". The more the time deviates from the current threshold time, the greater the change.<br>If you choose a small fee multiplier for crafting transactions, it may be useful to exclude the crafting transaction from the adaptive fee calculation.</small></fieldset></div>';
+			settingsModalContentString += '</li>';
+			settingsModalContentString += '<li class="tab_scanning">';
+			settingsModalContentString += '<div>Moving Scan Pattern <select id="scanBlockPattern"> <option value="square">square</option> <option value="ring">ring</option> <option value="spiral">spiral</option> <option value="up">up</option> <option value="down">down</option> <option value="left">left</option> <option value="right">right</option> <option value="sly">sly</option> </select><br><small>Only applies to fleets set to Move While Scanning</small></div>';
+			settingsModalContentString += '<div>Scan Block Length <input id="scanBlockLength" type="number" min="2" max="50" placeholder="5"></input><br><small>How far fleets should go for the up, down, left and right scanning patterns</small></div>';
+			settingsModalContentString += '<div>Scan Block Resets After Resupply? <input id="scanBlockResetAfterResupply" type="checkbox"></input><br><small>Start from the beginning of the pattern after resupplying at starbase?</small></div>';
+			settingsModalContentString += '<div>Scan Resupply On Low Fuel? <input id="scanResupplyOnLowFuel" type="checkbox"></input><br><small>Do scanning fleets set to Move While Scanning return to base to resupply when fuel is too low to move?</small></div>';
+			settingsModalContentString += '<div>Scan Sector Regeneration Delay <input id="scanSectorRegenTime" type="number" min="0" placeholder="90"></input><br><small>Number of seconds to wait after finding SDU</small></div>';
+			settingsModalContentString += '<div>Scan Pause Time <input id="scanPauseTime" type="number" min="240" max="6000" placeholder="600"></input><br><small>Number of seconds to wait when sectors probabilities are too low</small></div>';
+			settingsModalContentString += '<div>Scan Strike Count <input id="scanStrikeCount" type="number" min="1" max="10" placeholder="3"></input><br><small>Number of low % scans before moving on or pausing</small></div>';
+			settingsModalContentString += '</li>';
+			settingsModalContentString += '<li class="tab_fleets">';
+			settingsModalContentString += '<div>Subwarp for short distances? <input id="subwarpShortDist" type="checkbox"></input><br><small>Should fleets subwarp when travel distance is 1 diagonal square or less?</small></div>';
+			settingsModalContentString += '<div>Use Ammo Banks for Transport? <input id="transportUseAmmoBank" type="checkbox"></input><br><small>Should transports also use their ammo banks to help move ammo?</small></div>';
+			settingsModalContentString += '<div>Stop Transports On Error <input id="transportStopOnError" type="checkbox"></input><br><small>Should transport fleet stop completely if there is an error (example: not enough resource/fuel/etc.)?</small></div>';
+			settingsModalContentString += '<div>Fuel to 100% for transports <input id="transportFuel100" type="checkbox"></input><br><small>If a refuel is needed at the source, should transport fleets fill fuel to 100%?</small></div>';
+			settingsModalContentString += '<div>Transports keep 1 resource <input id="transportKeep1" type="checkbox"></input><br><small>If unloading a resource, should transport fleets keep 1 resource to save a CreatePDA transaction when loading it again?</small></div>';
+			settingsModalContentString += '<div>Miners keep 1 resource <input id="minerKeep1" type="checkbox"></input><br><small>Same as previous option but for miners. Also load 1 food more, so the food token account is not closed, too.</small></div>';
+			settingsModalContentString += '<div>Fleets leave 1 resource in starbases <input id="starbaseKeep1" type="checkbox"></input><br><small>Same as previous option but for starbases.</small></div>';
+			settingsModalContentString += '<div>Exclude fleets:<br><textarea id="excludeFleets" cols="40" rows="6"></textarea><br><small>Fleets that should be ignored<br>(one fleet name per line, case sensivity, reload required)</small></div>';
+			settingsModalContentString += '</li>';
+			settingsModalContentString += '<li class="tab_advanced">';
+			settingsModalContentString += '<div>Tx Poll Delay <input id="confirmationCheckingDelay" type="number" min="2000" max="10000" placeholder="2000"></input><br><small>How many milliseconds to wait before re-reading the chain for confirmation (min: 2000)</small></div>';
+			settingsModalContentString += '<div>Console Logging <input id="debugLogLevel" type="number" min="0" max="9" placeholder="3"></input><br><small>How much console logging you want to see (higher number = more, 0 = none)</small></div>';
+			settingsModalContentString += '<div>Auto Start Script <input id="autoStartScript" type="checkbox"></input><br><small>Should Lab Assistant automatically start after initialization is complete?</small></div>';
+			settingsModalContentString += '<div>Reload On Stuck Fleets <input id="reloadPageOnFailedFleets" type="number" min="0" max="999" placeholder="0"></input><br><small>Automatically refresh the page if this many fleets get stuck (0 = never)</small></div>';
+			settingsModalContentString += '<div>E-Mail-Interface <input id="emailInterface" type="text" size="40"></input><br><small>Send errors via the email interface (see "slya-email-interface.php" on GitHub for instructions).</small><button id="emailInterfaceTest">Test the interface URL</button> Result: <span id="emailInterfaceTestResult"></span></div>';
+			settingsModalContentString += '<div>'; 
+			settingsModalContentString += 'email fleet ix errors? <input id="emailFleetIxErrors" type="checkbox"></input><br>';
+			settingsModalContentString += 'email craft ix errors? <input id="emailCraftIxErrors" type="checkbox"></input><br>';
+			settingsModalContentString += 'email no cargo loaded? <input id="emailNoCargoLoaded" type="checkbox"></input><br>';
+			settingsModalContentString += 'email not enough fuel/food/ammo? <input id="emailNotEnoughFFA" type="checkbox"></input><br>';
+			settingsModalContentString += '</div>';
+			settingsModalContentString += '</li>';
+			settingsModalContentString += '</menu></div>';
+			//settingsModalContent.innerHTML = '<div class="assist-modal-header"> <img src="' + iconStr + '" /> <span style="padding-left: 15px;">SLY Assistant v' + GM_info.script.version + '</span> <div class="assist-modal-header-right"> <button class=" assist-modal-btn assist-modal-save">Save</button> <span class="assist-modal-close">x</span> </div></div><div class="assist-modal-body"> <span id="settings-modal-error"></span> <div id="settings-modal-header">Global Settings</div> <div>Priority Fee <input id="priorityFee" type="number" min="0" max="100000000" placeholder="1" ></input> <span>Added to each transaction. Set to 0 (zero) to disable (the wallet will then decide the fee!). 1 Lamport = 0.000000001 SOL. Normal transactions will use the full priority fee, smaller transactions will use 10%. Exception: craft transactions are super heavy and will use 250% of the fee.</span> </div> <div>Auto-Fee? <input id="automaticFee" type="checkbox"></input> <span>Enable the auto fee algorithm, works best if at least 1 tx is executed per minute.</span><fieldset id="autoFeeData">FeeMin: <input id="automaticFeeMin" type="number" min="0" max="100000" placeholder="1" size="6"></input> TimeMin: <input id="automaticFeeTimeMin" type="number" min="1" max="120" placeholder="6" size="3"></input><br/>FeeMax: <input id="automaticFeeMax" type="number" min="0" max="100000" placeholder="12000" size="6"></input> TimeMax: <input id="automaticFeeTimeMax" type="number" min="5" max="120" placeholder="40" size="3"></input><br/>Max fee change/tx: <input id="automaticFeeStep" type="number" min="1" max="1000" placeholder="80" size="6"></input><br/><span>Fee starts with the configured priority fee from above. The current fee is then somewhere between FeeMin and FeeMax. This is 1:1 carried over to TimeMin and TimeMax and results in a threshold time. If a new tx is below this time, the fee gets decreased. If a new tx is above this time, the fee gets increased. Both times the amount is limited to "Max fee change/tx". The more the time deviates from the current threshold time, the greater the change.</span></fieldset></div> <div>Save profile selection? <input id="saveProfile" type="checkbox"></input> <span>Should the profile selection be saved (uncheck to select a different profile each time)?</span> </div> <div>Tx Poll Delay <input id="confirmationCheckingDelay" type="number" min="200" max="10000" placeholder="200"></input> <span>How many milliseconds to wait before re-reading the chain for confirmation</span> </div> <div>Console Logging <input id="debugLogLevel" type="number" min="0" max="9" placeholder="3"></input> <span>How much console logging you want to see (higher number = more, 0 = none)</span> </div> <div>Crafting Jobs <input id="craftingJobs" type="number" min="0" max="100" placeholder="4"></input> <span>How many crafting jobs should be enabled?</span> </div> <div>Subwarp for short distances? <input id="subwarpShortDist" type="checkbox"></input> <span>Should fleets subwarp when travel distance is 1 diagonal square or less?</span> </div> <div>Use Ammo Banks for Transport? <input id="transportUseAmmoBank" type="checkbox"></input> <span>Should transports also use their ammo banks to help move ammo?</span> </div> <div>Stop Transports On Error <input id="transportStopOnError" type="checkbox"></input> <span>Should transport fleet stop completely if there is an error (example: not enough resource/fuel/etc.)?</span> </div> <div>Fuel to 100% for transports <input id="transportFuel100" type="checkbox"></input> <span>If a refuel is needed at the source, should transport fleets fill fuel to 100%?</span> </div> <div>Transports keep 1 resource <input id="transportKeep1" type="checkbox"></input> <span>If unloading a resource, should transport fleets keep 1 resource to save a CreatePDA transaction when loading it again?</span> </div> <div>Miners keep 1 resource <input id="minerKeep1" type="checkbox"></input> <span>Same as previous option but for miners. Also load 1 food more, so the food token account is not closed, too.</span> </div> <div>Starbases keep 1 resource <input id="starbaseKeep1" type="checkbox"></input> <span>Same as previous option but for starbases.</span> </div> <div>Moving Scan Pattern <select id="scanBlockPattern"> <option value="square">square</option> <option value="ring">ring</option> <option value="spiral">spiral</option> <option value="up">up</option> <option value="down">down</option> <option value="left">left</option> <option value="right">right</option> <option value="sly">sly</option> </select> <span>Only applies to fleets set to Move While Scanning</span> </div> <div>Scan Block Length <input id="scanBlockLength" type="number" min="2" max="50" placeholder="5"></input> <span>How far fleets should go for the up, down, left and right scanning patterns</span> </div> <div>Scan Block Resets After Resupply? <input id="scanBlockResetAfterResupply" type="checkbox"></input> <span>Start from the beginning of the pattern after resupplying at starbase?</span> </div> <div>Scan Resupply On Low Fuel? <input id="scanResupplyOnLowFuel" type="checkbox"></input> <span>Do scanning fleets set to Move While Scanning return to base to resupply when fuel is too low to move?</span> </div> <div>Scan Sector Regeneration Delay <input id="scanSectorRegenTime" type="number" min="0" placeholder="90"></input> <span>Number of seconds to wait after finding SDU</span> </div> <div>Scan Pause Time <input id="scanPauseTime" type="number" min="240" max="6000" placeholder="600"></input> <span>Number of seconds to wait when sectors probabilities are too low</span> </div> <div>Scan Strike Count <input id="scanStrikeCount" type="number" min="1" max="10" placeholder="3"></input> <span>Number of low % scans before moving on or pausing</span> </div> <div>Status Panel Opacity <input id="statusPanelOpacity" type="range" min="1" max="100" value="75"></input> <span>(requires page refresh)</span> </div> <div>---</div> <div>Advanced Settings</div> <div>Auto Start Script <input id="autoStartScript" type="checkbox"></input> <span>Should Lab Assistant automatically start after initialization is complete?</span> </div> <div>Reload On Stuck Fleets <input id="reloadPageOnFailedFleets" type="number" min="0" max="999" placeholder="0"></input> <span>Automatically refresh the page if this many fleets get stuck (0 = never)</span> </div><div>Exclude fleets:<br><textarea id="excludeFleets" cols="40" rows="6"></textarea><br><span>(one fleet name per line, case sensivity, reload required)</span> </div></div>';
+			settingsModalContent.innerHTML = settingsModalContentString;
 			settingsModal.append(settingsModalContent);
 
 			let importModal = document.createElement('div');
@@ -6114,6 +6708,16 @@
 			importModalContent.classList.add('assist-modal-content');
 			importModalContent.innerHTML = '<div class="assist-modal-header"><span>Config Import/Export</span><div class="assist-modal-header-right"><button id="importTargetsBtn" class="assist-modal-btn assist-modal-save">Import Fleet Targets</button><button id="importConfigBtn" class="assist-modal-btn assist-modal-save">Import Config</button><span class="assist-modal-close">x</span></div></div><div class="assist-modal-body"><span id="assist-modal-error"></span><div></div><div><ul><li>Copy the text below to save your raw Lab Assistant configuration.</li><li>To restore your previous configuration, enter configuration text in the text box below then click the Import Config button.</li><li>To import new Target coordinates for fleets, paste the exported text from EveEye in the text box below then click the Import Fleet Targets button.</li></ul></div><div></div><textarea id="importText" rows="4" cols="80" max-width="100%"></textarea></div>';
 			importModal.append(importModalContent);
+
+			let errorModal = document.createElement('div');
+			errorModal.classList.add('assist-modal');
+			errorModal.id = 'errorModal';
+			errorModal.style.display = 'none';
+			errorModal.style.zIndex = 3;
+			let errorModalContent = document.createElement('div');
+			errorModalContent.classList.add('assist-modal-content');
+			errorModalContent.innerHTML = '<div class="assist-modal-header"><span>Error Log</span><div class="assist-modal-header-right"><button id="reloadLogBtn" class="assist-modal-btn">Reload</button><button id="clearBtn" class="assist-modal-btn">Clear</button> <span class="assist-modal-close">x</span></div></div><div class="assist-modal-body"><div>Snapshot of the error log (to see an updated state, close/open this overlay or use the reload button). Logged errors: ix errors, network errors, unhandled exceptions</div><textarea id="errorText" rows="12" cols="80" max-width="100%"></textarea></div><br>';
+			errorModal.append(errorModalContent);
 
 			let profileModal = document.createElement('div');
 			profileModal.classList.add('assist-modal');
@@ -6130,7 +6734,7 @@
 			assistStatus.style.display = 'none';
 			let assistStatusContent = document.createElement('div');
 			assistStatusContent.classList.add('assist-status-content');
-			assistStatusContent.innerHTML = '<div class="assist-modal-header" style="cursor: move;">Status<div>&nbsp;&nbsp;<small id="assist-modal-balance" style="font-size:75%"></small>&nbsp;<small id="assist-modal-fee" style="font-size:75%;">Fee:'+currentFee+'</small>&nbsp;</div><div class="assist-modal-header-right"><span class="assist-modal-close">x</span></div></div><div class="assist-modal-body"><table><tr><td>Fleet</td><td>Food</td><td>SDUs</td><td>State</td></tr></table></div>'
+			assistStatusContent.innerHTML = '<div class="assist-modal-header" style="cursor: move;">Status<div>&nbsp;&nbsp;<small id="assist-modal-balance" style="font-size:75%"></small>&nbsp;<small id="assist-modal-fee" style="font-size:75%;">Fee:'+currentFee+'</small>&nbsp;</div><div class="assist-modal-header-right"><span class="assist-modal-close">x</span></div></div><div class="assist-modal-body"><table class="main"><tr></tr></table></div>'
 			assistStatus.append(assistStatusContent);
 
 			//statsadd start
@@ -6139,7 +6743,7 @@
 			assistStats.style.display = 'none';
 			let assistStatsContent = document.createElement('div');
 			assistStatsContent.classList.add('assist-status-content');
-			assistStatsContent.innerHTML = '<div class="assist-modal-header" style="cursor: move;">Statistics &nbsp;<a href="javascript:;" id="assist-stats-reset" style="color:inherit;font-size:70%;">Reset</a>&nbsp;&nbsp;<div class="assist-modal-header-right"><span class="assist-modal-close">x</span></div></div><div id="assistStatsContent" class="assist-modal-body"></div>'
+			assistStatsContent.innerHTML = '<div class="assist-modal-header" style="cursor: move;">Statistics &nbsp;<small id="assist-modal-time" style="font-size:75%;"></small>&nbsp;&nbsp;<a href="javascript:;" id="assist-stats-reset" style="color:inherit;font-size:70%;">Reset</a>&nbsp;&nbsp;<div class="assist-modal-header-right"><span class="assist-modal-close">x</span></div></div><div id="assistStatsContent" class="assist-modal-body"></div>'
 			assistStats.append(assistStatsContent);
 			//statsadd end
 
@@ -6201,7 +6805,7 @@
 			let assistConfigButton = document.createElement('button');
 			assistConfigButton.id = 'assistConfigBtn';
 			assistConfigButton.classList.add('assist-btn','assist-btn-alt');
-			assistConfigButton.addEventListener('click', function(e) {if(initComplete) assistModalToggle();});
+			assistConfigButton.addEventListener('click', function(e) {assistModalToggle();});
 			let assistConfigSpan = document.createElement('span');
 			assistConfigSpan.innerText = 'Config (wait)';
 			assistConfigSpan.style.fontSize = '14px';
@@ -6236,6 +6840,15 @@
 			assistStatsButton.appendChild(assistStatsSpan);
 			//statsadd
 
+			let assistErrorButton = document.createElement('button');
+			assistErrorButton.id = 'assistErrorBtn';
+			assistErrorButton.classList.add('assist-btn','assist-btn-alt');
+			assistErrorButton.addEventListener('click', function(e) {assistErrorToggle();});
+			let assistErrorSpan = document.createElement('span');
+			assistErrorSpan.innerText = 'Error log';
+			assistErrorSpan.style.fontSize = '14px';
+			assistErrorButton.appendChild(assistErrorSpan);
+
 			let assistStarbaseStatusButton = document.createElement('button');
 			assistStarbaseStatusButton.id = 'assistStarbaseStatusBtn';
 			assistStarbaseStatusButton.classList.add('assist-btn','assist-btn-alt');
@@ -6256,6 +6869,7 @@
 			dropdown.appendChild(assistStatsButton); //statsadd
 			dropdown.appendChild(assistConfigButton);
 			dropdown.appendChild(assistSettingsButton);
+			dropdown.appendChild(assistErrorButton);
 
 			let targetElem = document.querySelector('body');
 			if (observer) {
@@ -6295,6 +6909,7 @@
 			autoContainer.append(assistCheck);
 			autoContainer.append(assistStats); //statsadd
 			autoContainer.append(importModal);
+			autoContainer.append(errorModal);
 			autoContainer.append(profileModal);
 			//autoContainer.append(addAcctModal);
 			let assistModalClose = document.querySelector('#assistModal .assist-modal-close');
@@ -6316,7 +6931,7 @@
 			let assistStatsClose = document.querySelector('#assistStats .assist-modal-close'); //statsadd
 			assistStatsClose.addEventListener('click', function(e) {assistStatToggle('#assistStats');}); //statsadd
 			let assistStatsReset = document.querySelector('#assistStats #assist-stats-reset'); //statsadd
-			assistStatsReset.addEventListener('click', function(e) { transactionStats={ "start": (Math.round(Date.now() / 1000)), "groups":{} }; document.querySelector('#assistStatsContent').innerHTML=''; }); //statsadd
+			assistStatsReset.addEventListener('click', function(e) { transactionStats={ "start": (Math.round(Date.now() / 1000)), "groups":{} }; solanaReadCount = 0; solanaWriteCount = 0; document.querySelector('#assistStatsContent').innerHTML=''; }); //statsadd
 			let configImportExport = document.querySelector('#configImportExport');
 			configImportExport.addEventListener('click', function(e) {assistImportToggle();});
 			let configImport = document.querySelector('#importConfigBtn');
@@ -6333,6 +6948,14 @@
 			//removeAcctBtn.addEventListener('click', function(e) {removeKeyFromProfile();});
 			let configImportClose = document.querySelector('#importModal .assist-modal-close');
 			configImportClose.addEventListener('click', function(e) {assistImportToggle();});
+			let assistErrorClose = document.querySelector('#errorModal .assist-modal-close');
+			assistErrorClose.addEventListener('click', function(e) {assistErrorToggle();});
+			let assistErrorClearBtn = document.querySelector('#clearBtn');
+			assistErrorClearBtn.addEventListener('click', function(e) {clearErrors();});
+			let assistErrorReloadBtn = document.querySelector('#reloadLogBtn');
+			assistErrorReloadBtn.addEventListener('click', function(e) {reloadErrors();});
+			let emailInterfaceTestButton = document.querySelector('#emailInterfaceTest');
+			emailInterfaceTestButton.addEventListener('click', function(e) {emailInterfaceTest();});
 			let profileModalClose = document.querySelector('#profileModal .assist-modal-close');
 			profileModalClose.addEventListener('click', function(e) {assistProfileToggle(null);});
 			//let addAcctClose = document.querySelector('#addAcctModal .assist-modal-close');
